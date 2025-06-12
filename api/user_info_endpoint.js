@@ -1,0 +1,55 @@
+// api/user-info.js
+export default function handler(req, res) {
+    // Enable CORS
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    
+    if (req.method === 'OPTIONS') {
+        res.status(200).end();
+        return;
+    }
+    
+    if (req.method !== 'GET') {
+        res.status(405).json({ error: 'Method not allowed' });
+        return;
+    }
+    
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({
+                success: false,
+                error: 'Authorization header required'
+            });
+        }
+        
+        const apiKey = authHeader.substring(7); // Remove 'Bearer '
+        
+        // TODO: Validate API key with database (Supabase) later
+        console.log('User info requested with API key:', apiKey.substring(0, 8) + '...');
+        
+        // Mock user data for now
+        res.status(200).json({
+            success: true,
+            user: {
+                email: 'user@example.com',
+                plan: 'free',
+                createdAt: new Date().toISOString()
+            },
+            usage: {
+                today: Math.floor(Math.random() * 3), // Random for demo
+                limit: 5,
+                remaining: 5 - Math.floor(Math.random() * 3)
+            },
+            timestamp: new Date().toISOString()
+        });
+        
+    } catch (error) {
+        console.error('User info error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to get user info'
+        });
+    }
+}
