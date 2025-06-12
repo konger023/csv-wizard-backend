@@ -1,207 +1,238 @@
-// api/index.js - Vercel Serverless Function for CSV Wizard
+// CSV Wizard Backend API - Vercel Compatible Version
 const express = require('express');
 const cors = require('cors');
+const crypto = require('crypto');
 
 const app = express();
 
-// Enhanced CORS for Chrome extensions and production
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow Chrome extensions, localhost, and Vercel domains
-    if (!origin || 
-        origin.startsWith('chrome-extension://') || 
-        origin.startsWith('moz-extension://') ||
-        origin.includes('localhost') ||
-        origin.includes('127.0.0.1') ||
-        origin.includes('vercel.app')) {
-      callback(null, true);
-    } else {
-      callback(null, true); // Allow all for now, restrict later if needed
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
-};
+// ============================================
+// MIDDLEWARE SETUP
+// ============================================
+app.use(cors({
+    origin: ['chrome-extension://*', 'http://localhost:*', 'https://*'],
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true
+}));
 
-app.use(cors(corsOptions));
-
-// Body parsing
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Logging middleware
 app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
-  next();
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+    next();
 });
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  console.log('🏥 Health check requested');
-  res.json({ 
-    status: 'healthy', 
-    message: 'CSV Wizard Backend is running on Vercel!',
-    timestamp: new Date().toISOString(),
-    environment: 'production',
-    platform: 'vercel',
-    version: '1.0.0',
-    endpoints: ['/api/health', '/api/generate-api-key', '/api/user-info', '/api/complete-upload']
-  });
+// ============================================
+// ROOT ROUTES (Handle both / and /api paths)
+// ============================================
+
+// Root endpoint
+app.get('/', (req, res) => {
+    res.json({
+        success: true,
+        message: 'CSV Wizard Backend API',
+        version: '1.0.0',
+        timestamp: new Date().toISOString(),
+        endpoints: {
+            health: '/api/health',
+            generateApiKey: '/api/generate-api-key',
+            userInfo: '/api/user-info',
+            completeUpload: '/api/complete-upload'
+        }
+    });
 });
 
 // Test endpoint
 app.get('/test', (req, res) => {
-  console.log('🧪 Test endpoint requested');
-  res.json({ 
-    message: 'Chrome extension connection successful!',
-    backend: 'CSV Wizard Backend v1.0 on Vercel',
-    timestamp: new Date().toISOString(),
-    origin: req.headers.origin,
-    platform: 'vercel-serverless'
-  });
-});
-
-// Generate API key (mock for now, will integrate Supabase next)
-app.post('/api/generate-api-key', (req, res) => {
-  try {
-    const { email, googleData } = req.body;
-    console.log('🔑 API key generation requested for:', email);
-    
-    if (!email) {
-      return res.status(400).json({ error: 'Email required' });
-    }
-    
-    const apiKey = 'csv_' + Math.random().toString(36).substring(2) + Date.now();
-    const userId = 'user_' + Date.now();
-    
-    console.log('✅ Generated API key:', apiKey.substring(0, 10) + '...');
-    
     res.json({
-      success: true,
-      apiKey: apiKey,
-      userId: userId,
-      platform: 'vercel'
-    });
-    
-  } catch (error) {
-    console.error('❌ API key generation failed:', error);
-    res.status(500).json({
-      error: 'Failed to generate API key',
-      message: error.message
-    });
-  }
-});
-
-// User info
-app.get('/api/user-info', (req, res) => {
-  try {
-    console.log('👤 User info requested');
-    
-    res.json({
-      success: true,
-      user: {
-        userId: 'test_user',
-        email: 'test@example.com',
-        plan: 'free',
-        memberSince: new Date().toISOString()
-      },
-      usage: {
-        today: 0,
-        limit: 5,
-        remaining: 5,
-        allowed: true
-      },
-      platform: 'vercel'
-    });
-  } catch (error) {
-    console.error('❌ User info failed:', error);
-    res.status(500).json({
-      error: 'Failed to get user info',
-      message: error.message
-    });
-  }
-});
-
-// Complete upload
-app.post('/api/complete-upload', (req, res) => {
-  try {
-    const { csvContent, filename, spreadsheetId, sheetName } = req.body;
-    
-    console.log('🚀 Complete upload requested');
-    console.log('  Filename:', filename);
-    console.log('  Spreadsheet ID:', spreadsheetId);
-    console.log('  CSV length:', csvContent?.length || 0);
-    
-    // Simulate processing (instant for serverless)
-    res.json({
-      success: true,
-      processing: {
-        rows: Math.floor(Math.random() * 1000) + 50,
-        columns: Math.floor(Math.random() * 10) + 3,
-        delimiter: ',',
-        hasHeaders: true,
-        quality: 0.95,
-        processingTime: 125 // Faster on serverless!
-      },
-      upload: {
         success: true,
-        spreadsheetId: spreadsheetId,
-        sheetName: sheetName || 'Sheet1',
-        rowsUploaded: Math.floor(Math.random() * 1000) + 50,
-        spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
-        method: 'append'
-      },
-      filename: filename,
-      remainingUploads: 4,
-      platform: 'vercel'
+        message: 'Test endpoint working!',
+        timestamp: new Date().toISOString()
     });
-    
-  } catch (error) {
-    console.error('❌ Upload failed:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Upload failed',
-      message: error.message
-    });
-  }
 });
 
-// Root endpoint
-app.get('/', (req, res) => {
-  res.json({
-    name: 'CSV Wizard Backend',
-    version: '1.0.0',
-    status: 'running',
-    platform: 'vercel-serverless',
-    endpoints: {
-      health: 'GET /api/health',
-      test: 'GET /test',
-      apiKey: 'POST /api/generate-api-key',
-      userInfo: 'GET /api/user-info',
-      upload: 'POST /api/complete-upload'
+// ============================================
+// API ENDPOINTS
+// ============================================
+
+// Health check
+app.get('/api/health', (req, res) => {
+    res.json({
+        success: true,
+        status: 'healthy',
+        service: 'CSV Wizard Backend',
+        version: '1.0.0',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
+});
+
+// Generate API key
+app.post('/api/generate-api-key', (req, res) => {
+    try {
+        const { email, googleData } = req.body;
+        
+        if (!email) {
+            return res.status(400).json({
+                success: false,
+                error: 'Email is required'
+            });
+        }
+        
+        // Generate API key
+        const apiKey = crypto.randomBytes(32).toString('hex');
+        
+        // TODO: Store in database (Supabase)
+        console.log('API Key generated for:', email);
+        
+        res.json({
+            success: true,
+            apiKey: apiKey,
+            message: 'API key generated successfully'
+        });
+        
+    } catch (error) {
+        console.error('Generate API key error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to generate API key'
+        });
     }
-  });
 });
 
-// Error handling
-app.use((error, req, res, next) => {
-  console.error('💥 Server error:', error);
-  res.status(500).json({ 
-    error: 'Internal server error',
-    message: error.message 
-  });
+// Get user info
+app.get('/api/user-info', (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({
+                success: false,
+                error: 'Authorization header required'
+            });
+        }
+        
+        // TODO: Validate API key with database
+        
+        // Mock user data for now
+        res.json({
+            success: true,
+            user: {
+                email: 'user@example.com',
+                plan: 'free',
+                createdAt: new Date().toISOString()
+            },
+            usage: {
+                today: 2,
+                limit: 5,
+                remaining: 3
+            }
+        });
+        
+    } catch (error) {
+        console.error('User info error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to get user info'
+        });
+    }
 });
+
+// Complete upload to Google Sheets
+app.post('/api/complete-upload', async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({
+                success: false,
+                error: 'Authorization header required'
+            });
+        }
+        
+        const {
+            csvContent,
+            filename,
+            spreadsheetId,
+            sheetName,
+            processingOptions,
+            uploadOptions,
+            googleToken
+        } = req.body;
+        
+        if (!csvContent || !spreadsheetId || !googleToken) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing required fields: csvContent, spreadsheetId, googleToken'
+            });
+        }
+        
+        // TODO: Implement actual Google Sheets upload
+        console.log('Processing upload:', {
+            filename,
+            spreadsheetId,
+            csvLength: csvContent.length,
+            sheetName
+        });
+        
+        // Mock successful response
+        const rowsUploaded = csvContent.split('\n').length - 1;
+        
+        res.json({
+            success: true,
+            message: 'Upload completed successfully',
+            upload: {
+                filename,
+                spreadsheetId,
+                sheetName: sheetName || 'Sheet1',
+                rowsUploaded,
+                timestamp: new Date().toISOString()
+            }
+        });
+        
+    } catch (error) {
+        console.error('Upload error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Upload failed: ' + error.message
+        });
+    }
+});
+
+// ============================================
+// ERROR HANDLING
+// ============================================
 
 // 404 handler
-app.use((req, res) => {
-  console.log('❓ 404 - Not found:', req.path);
-  res.status(404).json({ 
-    error: 'Endpoint not found',
-    path: req.path,
-    available: ['/api/health', '/test', '/api/generate-api-key', '/api/user-info', '/api/complete-upload']
-  });
+app.use('*', (req, res) => {
+    console.log('404 - Route not found:', req.method, req.originalUrl);
+    res.status(404).json({
+        success: false,
+        error: 'Route not found',
+        path: req.originalUrl,
+        method: req.method,
+        availableRoutes: [
+            'GET /',
+            'GET /test', 
+            'GET /api/health',
+            'POST /api/generate-api-key',
+            'GET /api/user-info',
+            'POST /api/complete-upload'
+        ]
+    });
 });
 
-// Export for Vercel
+// Global error handler
+app.use((err, req, res, next) => {
+    console.error('Global error:', err);
+    res.status(500).json({
+        success: false,
+        error: 'Internal server error',
+        message: err.message
+    });
+});
+
+// ============================================
+// EXPORT FOR VERCEL
+// ============================================
 module.exports = app;
