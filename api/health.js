@@ -20,14 +20,23 @@ export default function handler(req, res) {
         success: true,
         status: 'healthy',
         service: 'CSV Wizard Backend',
-        version: '1.0.0',
+        version: '2.0.0',
+        trialSystem: '🎯 7-day free trial active',
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
         endpoints: {
             health: '/api/health',
             generateApiKey: '/api/generate-api-key',
             userInfo: '/api/user-info',
-            completeUpload: '/api/complete-upload'
-        }
+            completeUpload: '/api/complete-upload',
+            uploadCsv: '/api/upload-csv'
+        },
+        features: [
+            '7-day free trial for all new users',
+            'Unlimited uploads during trial',
+            'Server-side CSV processing',
+            'Google Sheets integration',
+            'Secure API key authentication'
+        ]
     });
 }
