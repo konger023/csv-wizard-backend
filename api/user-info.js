@@ -1,4 +1,11 @@
-export default function handler(req, res) {
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_KEY
+);
+
+export default async function handler(req, res) {
     // Enable CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -27,30 +34,81 @@ export default function handler(req, res) {
         
         const apiKey = authHeader.substring(7); // Remove 'Bearer '
         
-        // TODO: Validate API key with database (Supabase) later
-        console.log('User info requested with API key:', apiKey.substring(0, 8) + '...');
+        // Get user from API key
+        const { data: apiKeyData, error: apiKeyError } = await supabase
+            .from('api_keys')
+            .select('user_id')
+            .eq('api_key', apiKey)
+            .eq('is_active', true)
+            .single();
         
-        // Mock user data for now
-        res.status(200).json({
+        if (apiKeyError || !apiKeyData) {
+            return res.status(401).json({
+                success: false,
+                error: 'Invalid API key'
+            });
+        }
+        
+        const userId = apiKeyData.user_id;
+        
+        // Get user usage and trial info
+        const { data: usageData, error: usageError } = await supabase
+            .from('user_usage')
+            .select('plan, created_at, trial_ends_at, uploads_today, uploads_this_month, total_uploads')
+            .eq('user_id', userId)
+            .single();
+        
+        if (usageError) {
+            return res.status(404).json({
+                success: false,
+                error: 'User not found'
+            });
+        }
+        
+        // Calculate trial status
+        const now = new Date();
+        const trialEnd = new Date(usageData.trial_ends_at);
+        const isTrialExpired = now > trialEnd;
+        const daysRemaining = Math.max(0, Math.ceil((trialEnd - now) / (24 * 60 * 60 * 1000)));
+        
+        // Check if user has a paid plan
+        const isPaidPlan = usageData.plan === 'pro' || usageData.plan === 'basic';
+        
+        const trialStatus = {
+            isActive: !isTrialExpired && usageData.plan === 'trial',
+            isExpired: isTrialExpired && usageData.plan === 'trial',
+            daysRemaining: daysRemaining,
+            endsAt: usageData.trial_ends_at,
+            unlimited: isPaidPlan || (!isTrialExpired && usageData.plan === 'trial'),
+            needsUpgrade: isTrialExpired && usageData.plan === 'trial'
+        };
+        
+        // Get user email from auth
+        const { data: authUser } = await supabase.auth.admin.getUserById(userId);
+        
+        res.json({
             success: true,
             user: {
-                email: 'user@example.com',
-                plan: 'free',
-                createdAt: new Date().toISOString()
+                userId: userId,
+                email: authUser?.user?.email || null,
+                plan: usageData.plan,
+                memberSince: usageData.created_at
             },
+            trial: trialStatus,
             usage: {
-                today: Math.floor(Math.random() * 3), // Random for demo
-                limit: 5,
-                remaining: 5 - Math.floor(Math.random() * 3)
-            },
-            timestamp: new Date().toISOString()
+                today: usageData.uploads_today || 0,
+                thisMonth: usageData.uploads_this_month || 0,
+                total: usageData.total_uploads || 0,
+                unlimited: trialStatus.unlimited
+            }
         });
         
     } catch (error) {
         console.error('User info error:', error);
         res.status(500).json({
             success: false,
-            error: 'Failed to get user info'
+            error: 'Failed to get user info',
+            message: error.message
         });
     }
 }
