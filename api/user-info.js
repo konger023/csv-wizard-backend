@@ -24,12 +24,8 @@ export default async function handler(req, res) {
     }
     
     try {
-        console.log('📊 User info request received');
-        console.log('Headers:', JSON.stringify(req.headers, null, 2));
-        
         const authHeader = req.headers.authorization;
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
-            console.log('❌ Missing or invalid auth header');
             return res.status(401).json({
                 success: false,
                 error: 'Authorization header required'
@@ -37,65 +33,35 @@ export default async function handler(req, res) {
         }
         
         const apiKey = authHeader.substring(7);
-        console.log('🔑 API key received:', apiKey.substring(0, 20) + '...');
         
-        // Debug: Check if API key exists in database
-        console.log('🔍 Looking up API key in database...');
+        // Get user from API key - FIXED: removed 'plan' column
         const { data: apiKeyData, error: apiKeyError } = await supabase
             .from('api_keys')
-            .select('user_id, plan, is_active')
+            .select('user_id, is_active')  // ✅ Fixed: removed plan column
             .eq('api_key', apiKey)
             .eq('is_active', true)
             .single();
         
-        console.log('📦 API key lookup result:', {
-            data: apiKeyData,
-            error: apiKeyError
-        });
-        
         if (apiKeyError || !apiKeyData) {
-            console.log('❌ API key not found in database');
-            
-            // Debug: Let's see what API keys ARE in the database
-            const { data: allKeys } = await supabase
-                .from('api_keys')
-                .select('api_key, user_id, is_active')
-                .limit(5);
-            
-            console.log('🗂️ Sample API keys in database:', allKeys);
-            
             return res.status(401).json({
                 success: false,
-                error: 'Invalid API key - not found in database',
-                debug: {
-                    apiKeyReceived: apiKey.substring(0, 20) + '...',
-                    apiKeysInDb: allKeys?.length || 0
-                }
+                error: 'Invalid API key'
             });
         }
         
         const userId = apiKeyData.user_id;
-        console.log('✅ Found user ID:', userId);
         
         // Get user usage and trial info
-        console.log('📊 Looking up user usage...');
         const { data: usageData, error: usageError } = await supabase
             .from('user_usage')
             .select('plan, created_at, trial_ends_at, uploads_today, uploads_this_month, total_uploads')
             .eq('user_id', userId)
             .single();
         
-        console.log('📦 User usage result:', {
-            data: usageData,
-            error: usageError
-        });
-        
         if (usageError) {
-            console.log('❌ User usage not found');
             return res.status(404).json({
                 success: false,
-                error: 'User usage data not found',
-                debug: { userId, usageError }
+                error: 'User not found'
             });
         }
         
@@ -105,6 +71,7 @@ export default async function handler(req, res) {
         const isTrialExpired = now > trialEnd;
         const daysRemaining = Math.max(0, Math.ceil((trialEnd - now) / (24 * 60 * 60 * 1000)));
         
+        // Check if user has a paid plan
         const isPaidPlan = usageData.plan === 'pro' || usageData.plan === 'basic';
         
         const trialStatus = {
@@ -119,7 +86,6 @@ export default async function handler(req, res) {
         // Get user email from auth
         const { data: authUser } = await supabase.auth.admin.getUserById(userId);
         
-        console.log('✅ Sending successful response');
         res.json({
             success: true,
             user: {
@@ -138,12 +104,11 @@ export default async function handler(req, res) {
         });
         
     } catch (error) {
-        console.error('❌ User info error:', error);
+        console.error('User info error:', error);
         res.status(500).json({
             success: false,
             error: 'Failed to get user info',
-            message: error.message,
-            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+            message: error.message
         });
     }
 }
