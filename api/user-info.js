@@ -34,15 +34,16 @@ export default async function handler(req, res) {
         
         const apiKey = authHeader.substring(7);
         
-        // Get user from API key - FIXED: removed 'plan' column
+        // Get user from API key - now includes user_email
         const { data: apiKeyData, error: apiKeyError } = await supabase
             .from('api_keys')
-            .select('user_id, is_active')  // ✅ Fixed: removed plan column
+            .select('user_id, user_email, is_active, created_at')
             .eq('api_key', apiKey)
             .eq('is_active', true)
             .single();
         
         if (apiKeyError || !apiKeyData) {
+            console.error('API key lookup failed:', apiKeyError);
             return res.status(401).json({
                 success: false,
                 error: 'Invalid API key'
@@ -50,6 +51,7 @@ export default async function handler(req, res) {
         }
         
         const userId = apiKeyData.user_id;
+        const userEmail = apiKeyData.user_email;
         
         // Get user usage and trial info
         const { data: usageData, error: usageError } = await supabase
@@ -59,9 +61,10 @@ export default async function handler(req, res) {
             .single();
         
         if (usageError) {
+            console.error('Usage data lookup failed:', usageError);
             return res.status(404).json({
                 success: false,
-                error: 'User not found'
+                error: 'User usage data not found'
             });
         }
         
@@ -83,14 +86,11 @@ export default async function handler(req, res) {
             needsUpgrade: isTrialExpired && usageData.plan === 'trial'
         };
         
-        // Get user email from auth
-        const { data: authUser } = await supabase.auth.admin.getUserById(userId);
-        
         res.json({
             success: true,
             user: {
                 userId: userId,
-                email: authUser?.user?.email || null,
+                email: userEmail, // Use email from API key record
                 plan: usageData.plan,
                 memberSince: usageData.created_at
             },
