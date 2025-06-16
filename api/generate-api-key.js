@@ -62,8 +62,10 @@ export default async function handler(req, res) {
         const apiKey = generateApiKey(email);
         console.log('✅ API key generated:', apiKey.substring(0, 20) + '...');
         
-        // Create user ID
-        const userId = `user_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+        // Generate proper UUID for user_id
+        const { randomUUID } = await import('crypto');
+        const userId = randomUUID();
+        console.log('🆔 Generated UUID:', userId);
         
         // Save API key to database
         console.log('💾 Saving API key to database...');
