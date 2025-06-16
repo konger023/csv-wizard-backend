@@ -233,10 +233,10 @@ async function checkTrialStatus(userId) {
         const isPaidPlan = usageData.plan === 'pro' || usageData.plan === 'basic';
         
         return {
-            isTrialActive: !isTrialExpired && usageData.plan === 'trial',
-            isTrialExpired: isTrialExpired && usageData.plan === 'trial',
-            trialDaysRemaining: daysRemaining,
-            trialEndsAt: usageData.trial_ends_at,
+            isActive: !isTrialExpired && usageData.plan === 'trial',
+            isExpired: isTrialExpired && usageData.plan === 'trial',
+            daysRemaining: daysRemaining,
+            endsAt: usageData.trial_ends_at,
             plan: usageData.plan,
             unlimited: isPaidPlan || (!isTrialExpired && usageData.plan === 'trial'),
             needsUpgrade: isTrialExpired && usageData.plan === 'trial'
@@ -245,9 +245,9 @@ async function checkTrialStatus(userId) {
     } catch (error) {
         console.error('Trial status check failed:', error);
         return {
-            isTrialActive: false,
-            isTrialExpired: true,
-            trialDaysRemaining: 0,
+            isActive: false,
+            isExpired: true,
+            daysRemaining: 0,
             plan: 'free',
             unlimited: false,
             needsUpgrade: true
@@ -287,7 +287,7 @@ export default async function handler(req, res) {
         // Get user from API key
         const { data: apiKeyData, error: apiKeyError } = await supabase
             .from('api_keys')
-            .select('user_id')
+            .select('user_id, user_email')
             .eq('api_key', apiKey)
             .eq('is_active', true)
             .single();
@@ -334,7 +334,7 @@ export default async function handler(req, res) {
             spreadsheetId: spreadsheetId.substring(0, 10) + '...',
             csvLength: csvContent.length,
             sheetName,
-            trialDaysRemaining: trialStatus.trialDaysRemaining
+            trialDaysRemaining: trialStatus.daysRemaining
         });
         
         const startTime = Date.now();
@@ -345,11 +345,17 @@ export default async function handler(req, res) {
             return res.status(400).json(processResult);
         }
         
-        // Step 2: Upload to Google Sheets
+        // Step 2: Prepare data for upload (include headers if present)
+        let uploadData = processResult.rows;
+        if (processResult.headers) {
+            uploadData = [processResult.headers, ...processResult.rows];
+        }
+        
+        // Step 3: Upload to Google Sheets
         const uploadResult = await uploadToGoogleSheets(
             spreadsheetId,
             sheetName || 'Sheet1',
-            processResult.rows,
+            uploadData,
             uploadOptions,
             googleToken
         );
@@ -360,26 +366,40 @@ export default async function handler(req, res) {
         
         const processingTime = Date.now() - startTime;
         
-        // Step 3: Record usage (increment counter)
-        await supabase.rpc('increment_usage', { p_user_id: userId });
+        // Step 4: Record usage (increment counter)
+        const { error: incrementError } = await supabase
+            .rpc('increment_usage', { p_user_id: userId });
+            
+        if (incrementError) {
+            console.error('Failed to increment usage:', incrementError);
+            // Don't fail the upload for this
+        }
         
-        // Step 4: Log the upload
-        await supabase.from('csv_uploads').insert({
-            user_id: userId,
-            filename: filename,
-            file_size: csvContent.length,
-            sheet_name: sheetName || 'Sheet1',
-            sheet_url: uploadResult.spreadsheetUrl,
-            upload_type: uploadOptions?.mode || 'append',
-            rows_uploaded: processResult.rows.length,
-            status: 'success',
-            processing_time_ms: processingTime,
-            metadata: {
-                columns: processResult.metadata.columnCount,
-                hasHeaders: processResult.metadata.hasHeaders,
-                delimiter: processResult.delimiter
-            }
-        });
+        // Step 5: Log the upload
+        const { error: logError } = await supabase
+            .from('csv_uploads')
+            .insert({
+                user_id: userId,
+                filename: filename,
+                file_size: csvContent.length,
+                sheet_name: sheetName || 'Sheet1',
+                sheet_url: uploadResult.spreadsheetUrl,
+                upload_type: uploadOptions?.mode || 'append',
+                rows_uploaded: processResult.rows.length,
+                status: 'success',
+                processing_time_ms: processingTime,
+                metadata: {
+                    columns: processResult.metadata.columnCount,
+                    hasHeaders: processResult.metadata.hasHeaders,
+                    delimiter: processResult.delimiter
+                },
+                created_at: new Date().toISOString()
+            });
+            
+        if (logError) {
+            console.error('Failed to log upload:', logError);
+            // Don't fail the upload for this
+        }
         
         res.json({
             success: true,
