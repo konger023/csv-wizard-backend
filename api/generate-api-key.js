@@ -1,10 +1,3 @@
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_KEY
-);
-
 export default async function handler(req, res) {
     // Add CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -26,174 +19,86 @@ export default async function handler(req, res) {
     
     try {
         console.log('🚀 API Key generation request received');
-        console.log('Request body:', JSON.stringify(req.body, null, 2));
+        console.log('Environment check:');
+        console.log('- SUPABASE_URL exists:', !!process.env.SUPABASE_URL);
+        console.log('- SUPABASE_SERVICE_KEY exists:', !!process.env.SUPABASE_SERVICE_KEY);
+        console.log('- SUPABASE_URL value:', process.env.SUPABASE_URL);
         
         const { email, googleData } = req.body;
+        console.log('Request data:', { email, googleData });
         
-        // Validate required fields
         if (!email) {
-            console.error('❌ Missing email in request');
-            return res.status(400).json({
-                success: false,
-                error: 'Email is required'
-            });
+            return res.status(400).json({ success: false, error: 'Email required' });
         }
         
-        if (!email.includes('@')) {
-            console.error('❌ Invalid email format:', email);
-            return res.status(400).json({
-                success: false,
-                error: 'Invalid email format'
-            });
+        // Try to import Supabase
+        console.log('📦 Importing Supabase...');
+        const { createClient } = await import('@supabase/supabase-js');
+        console.log('✅ Supabase imported successfully');
+        
+        // Try to create Supabase client
+        console.log('🔗 Creating Supabase client...');
+        const supabase = createClient(
+            process.env.SUPABASE_URL,
+            process.env.SUPABASE_SERVICE_KEY
+        );
+        console.log('✅ Supabase client created');
+        
+        // Test simple connection
+        console.log('🧪 Testing Supabase connection...');
+        const { data: testData, error: testError } = await supabase
+            .from('api_keys')
+            .select('count')
+            .limit(1);
+            
+        if (testError) {
+            console.error('❌ Supabase connection test failed:', testError);
+            throw new Error(`Supabase connection failed: ${testError.message}`);
         }
         
-        console.log('✅ Email validation passed:', email);
-        
-        // Check if user already exists
-        console.log('🔍 Checking if user exists...');
-        const { data: existingUser, error: userCheckError } = await supabase.auth.admin.listUsers();
-        
-        let userId = null;
-        const existingUserAccount = existingUser?.users?.find(user => user.email === email);
-        
-        if (existingUserAccount) {
-            console.log('✅ User already exists:', existingUserAccount.id);
-            userId = existingUserAccount.id;
-            
-            // Check if they already have an API key
-            const { data: existingApiKey } = await supabase
-                .from('api_keys')
-                .select('api_key')
-                .eq('user_id', userId)
-                .eq('is_active', true)
-                .single();
-                
-            if (existingApiKey) {
-                console.log('✅ Returning existing API key');
-                
-                // Get existing user data
-                const { data: userData } = await supabase
-                    .from('user_usage')
-                    .select('*')
-                    .eq('user_id', userId)
-                    .single();
-                
-                return res.status(200).json({
-                    success: true,
-                    apiKey: existingApiKey.api_key,
-                    user: {
-                        email: email,
-                        name: googleData?.name || email.split('@')[0],
-                        picture: googleData?.picture || null,
-                        userId: userId
-                    },
-                    trial: {
-                        isActive: userData?.plan === 'trial',
-                        unlimited: userData?.plan !== 'trial' || new Date() < new Date(userData?.trial_ends_at)
-                    }
-                });
-            }
-        } else {
-            // Create new user in Supabase Auth
-            console.log('🆕 Creating new user...');
-            const { data: newUser, error: createUserError } = await supabase.auth.admin.createUser({
-                email: email,
-                email_confirm: true,
-                user_metadata: {
-                    name: googleData?.name || email.split('@')[0],
-                    picture: googleData?.picture || null
-                }
-            });
-            
-            if (createUserError) {
-                console.error('❌ Failed to create user:', createUserError);
-                throw createUserError;
-            }
-            
-            userId = newUser.user.id;
-            console.log('✅ New user created:', userId);
-        }
+        console.log('✅ Supabase connection successful');
         
         // Generate API key
         const apiKey = generateApiKey(email);
-        console.log('✅ API key generated');
+        console.log('✅ API key generated:', apiKey.substring(0, 20) + '...');
         
-        // Calculate trial end date (7 days from now)
-        const trialEndsAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+        // For now, just return success without saving to database
+        // We'll add database operations once connection is confirmed
+        console.log('✅ Returning test response');
         
-        // Insert API key into database
-        console.log('💾 Saving API key to database...');
-        const { error: apiKeyError } = await supabase
-            .from('api_keys')
-            .insert({
-                user_id: userId,
-                api_key: apiKey,
-                is_active: true,
-                created_at: new Date().toISOString()
-            });
-            
-        if (apiKeyError) {
-            console.error('❌ Failed to save API key:', apiKeyError);
-            throw apiKeyError;
-        }
-        
-        console.log('✅ API key saved to database');
-        
-        // Insert or update user usage data
-        console.log('💾 Setting up user usage...');
-        const { error: usageError } = await supabase
-            .from('user_usage')
-            .upsert({
-                user_id: userId,
-                plan: 'trial',
-                trial_ends_at: trialEndsAt,
-                uploads_today: 0,
-                uploads_this_month: 0,
-                total_uploads: 0,
-                created_at: new Date().toISOString()
-            });
-            
-        if (usageError) {
-            console.error('❌ Failed to setup user usage:', usageError);
-            throw usageError;
-        }
-        
-        console.log('✅ User usage setup complete');
-        
-        const responseData = {
+        return res.status(200).json({
             success: true,
             apiKey: apiKey,
             user: {
                 email: email,
                 name: googleData?.name || email.split('@')[0],
                 picture: googleData?.picture || null,
-                userId: userId,
-                createdAt: new Date().toISOString()
+                userId: 'test-user-id'
             },
             trial: {
                 isActive: true,
                 daysRemaining: 7,
                 unlimited: true,
-                expiresAt: trialEndsAt
+                expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
             }
-        };
-        
-        console.log('✅ Sending successful response');
-        return res.status(200).json(responseData);
+        });
         
     } catch (error) {
         console.error('❌ API Key generation failed:', error);
-        console.error('Error stack:', error.stack);
+        console.error('Error details:', {
+            message: error.message,
+            stack: error.stack,
+            name: error.name
+        });
         
         return res.status(500).json({
             success: false,
-            error: 'Internal server error: ' + error.message,
-            timestamp: new Date().toISOString()
+            error: 'API key generation failed: ' + error.message,
+            details: error.stack
         });
     }
 }
 
-// Helper function to generate API key
 function generateApiKey(email) {
     const timestamp = Date.now();
     const randomStr = Math.random().toString(36).substring(2, 15);
