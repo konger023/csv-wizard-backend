@@ -1,5 +1,5 @@
+// Updated API Key Generation with Trial Security Fix
 import { createClient } from '@supabase/supabase-js';
-import { randomUUID } from 'crypto';
 
 const supabase = createClient(
     process.env.SUPABASE_URL,
@@ -7,17 +7,16 @@ const supabase = createClient(
 );
 
 export default async function handler(req, res) {
-    // Add CORS headers
+    // Enable CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     
-    // Handle preflight requests
     if (req.method === 'OPTIONS') {
-        return res.status(200).end();
+        res.status(200).end();
+        return;
     }
     
-    // Only allow POST requests
     if (req.method !== 'POST') {
         return res.status(405).json({
             success: false,
@@ -26,147 +25,155 @@ export default async function handler(req, res) {
     }
     
     try {
-        console.log('🚀 API Key generation request received');
-        console.log('Environment check:');
-        console.log('- SUPABASE_URL exists:', !!process.env.SUPABASE_URL);
-        console.log('- SUPABASE_SERVICE_KEY exists:', !!process.env.SUPABASE_SERVICE_KEY);
-        
         const { email, googleData } = req.body;
-        console.log('Request data:', { email, googleDataName: googleData?.name });
         
-        if (!email) {
-            return res.status(400).json({ success: false, error: 'Email required' });
-        }
-        
-        // Check if user already exists
-        console.log('🔍 Checking for existing user...');
-        const { data: existingApiKey, error: checkError } = await supabase
-            .from('api_keys')
-            .select('api_key, user_id, is_active')
-            .eq('user_email', email) // Assuming you have user_email column, or we'll use a different approach
-            .eq('is_active', true)
-            .single();
-            
-        if (existingApiKey && !checkError) {
-            console.log('✅ Found existing active API key for user');
-            
-            // Get user usage info
-            const { data: usageData } = await supabase
-                .from('user_usage')
-                .select('*')
-                .eq('user_id', existingApiKey.user_id)
-                .single();
-                
-            const trialEnd = new Date(usageData?.trial_ends_at);
-            const now = new Date();
-            const daysRemaining = Math.max(0, Math.ceil((trialEnd - now) / (24 * 60 * 60 * 1000)));
-            
-            return res.status(200).json({
-                success: true,
-                apiKey: existingApiKey.api_key,
-                user: {
-                    email: email,
-                    name: googleData?.name || email.split('@')[0],
-                    picture: googleData?.picture || null,
-                    userId: existingApiKey.user_id
-                },
-                trial: {
-                    isActive: usageData?.plan === 'trial' && now < trialEnd,
-                    daysRemaining: daysRemaining,
-                    unlimited: true,
-                    expiresAt: usageData?.trial_ends_at
-                }
+        if (!email || !googleData) {
+            return res.status(400).json({
+                success: false,
+                error: 'Email and Google data are required'
             });
         }
         
-        // Generate new user and API key
-        console.log('👤 Creating new user...');
+        console.log('🔑 API key generation request for:', email);
+        
+        // SECURITY FIX: Check if user already exists by email
+        const { data: existingUser, error: existingError } = await supabase
+            .from('api_keys')
+            .select('api_key, user_id, created_at')
+            .eq('user_email', email)
+            .eq('is_active', true)
+            .single();
+        
+        if (existingUser && !existingError) {
+            console.log('👤 Returning existing user API key (no trial reset)');
+            
+            // Get existing trial status
+            const { data: existingUsage, error: usageError } = await supabase
+                .from('user_usage')
+                .select('*')
+                .eq('user_id', existingUser.user_id)
+                .single();
+            
+            if (existingUsage && !usageError) {
+                const now = new Date();
+                const trialEnd = new Date(existingUsage.trial_ends_at);
+                const daysRemaining = Math.max(0, Math.ceil((trialEnd - now) / (1000 * 60 * 60 * 24)));
+                const isActive = now <= trialEnd;
+                
+                return res.json({
+                    success: true,
+                    apiKey: existingUser.api_key,
+                    isNewUser: false,
+                    trial: {
+                        isActive: isActive,
+                        daysRemaining: daysRemaining,
+                        endDate: existingUsage.trial_ends_at,
+                        plan: existingUsage.plan || 'trial',
+                        totalUploads: existingUsage.total_uploads || 0
+                    },
+                    user: {
+                        email: email,
+                        name: googleData.name,
+                        registeredAt: existingUser.created_at
+                    }
+                });
+            }
+        }
+        
+        // New user - create API key and trial
+        console.log('🆕 Creating new user with 7-day trial');
         
         // Generate proper UUID for user_id
-        const userId = randomUUID();
-        console.log('🆔 Generated UUID:', userId);
+        const userId = crypto.randomUUID();
         
         // Generate API key
-        const apiKey = generateApiKey(email);
-        console.log('🔑 API key generated:', apiKey.substring(0, 20) + '...');
+        const timestamp = Date.now();
+        const randomStr = Math.random().toString(36).substring(2, 15);
+        const apiKey = `csvw_${userId.substring(0, 8)}_${timestamp}_${randomStr}`;
         
-        // Save API key to database (with user_email for easier lookup)
-        console.log('💾 Saving API key to database...');
-        const { error: apiKeyInsertError } = await supabase
+        console.log('🆔 Generated UUID:', userId);
+        console.log('🔑 Generated API key:', apiKey.substring(0, 20) + '...');
+        
+        // Insert API key record
+        const { data: apiKeyRecord, error: apiKeyError } = await supabase
             .from('api_keys')
             .insert({
                 user_id: userId,
                 api_key: apiKey,
-                user_email: email, // Add email for easier lookups
+                user_email: email,
                 is_active: true,
                 created_at: new Date().toISOString()
-            });
-            
-        if (apiKeyInsertError) {
-            console.error('❌ Failed to save API key:', apiKeyInsertError);
-            throw new Error(`Failed to save API key: ${apiKeyInsertError.message}`);
+            })
+            .select()
+            .single();
+        
+        if (apiKeyError) {
+            console.error('❌ Failed to save API key:', apiKeyError);
+            throw new Error('Failed to save API key: ' + apiKeyError.message);
         }
         
-        // Save user usage info
-        console.log('📊 Creating user usage record...');
-        const trialEndDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-        const { error: usageInsertError } = await supabase
+        console.log('✅ API key saved successfully');
+        
+        // Create user usage record with 7-day trial
+        const trialEndDate = new Date();
+        trialEndDate.setDate(trialEndDate.getDate() + 7); // 7 days from now
+        
+        const { data: usageRecord, error: usageError } = await supabase
             .from('user_usage')
             .insert({
                 user_id: userId,
-                user_email: email, // Add email here too
+                user_email: email,
                 plan: 'trial',
                 trial_ends_at: trialEndDate.toISOString(),
                 uploads_today: 0,
                 uploads_this_month: 0,
                 total_uploads: 0,
                 created_at: new Date().toISOString()
-            });
+            })
+            .select()
+            .single();
+        
+        if (usageError) {
+            console.error('❌ Failed to create usage record:', usageError);
             
-        if (usageInsertError) {
-            console.error('❌ Failed to save user usage:', usageInsertError);
-            throw new Error(`Failed to save user usage: ${usageInsertError.message}`);
+            // Clean up API key if usage creation fails
+            await supabase
+                .from('api_keys')
+                .delete()
+                .eq('user_id', userId);
+                
+            throw new Error('Failed to create user trial: ' + usageError.message);
         }
         
-        console.log('✅ Database records created successfully');
+        console.log('✅ Trial created successfully, expires:', trialEndDate.toISOString());
         
-        return res.status(200).json({
+        // Return success response
+        res.json({
             success: true,
             apiKey: apiKey,
-            user: {
-                email: email,
-                name: googleData?.name || email.split('@')[0],
-                picture: googleData?.picture || null,
-                userId: userId
-            },
+            isNewUser: true,
             trial: {
                 isActive: true,
                 daysRemaining: 7,
-                unlimited: true,
-                expiresAt: trialEndDate.toISOString()
-            }
+                endDate: trialEndDate.toISOString(),
+                plan: 'trial',
+                totalUploads: 0,
+                unlimited: true // During trial
+            },
+            user: {
+                email: email,
+                name: googleData.name || 'User',
+                picture: googleData.picture,
+                registeredAt: new Date().toISOString()
+            },
+            message: 'Account created successfully with 7-day free trial'
         });
         
     } catch (error) {
-        console.error('❌ API Key generation failed:', error);
-        console.error('Error details:', {
-            message: error.message,
-            stack: error.stack,
-            name: error.name
-        });
-        
-        return res.status(500).json({
+        console.error('❌ API key generation failed:', error);
+        res.status(500).json({
             success: false,
-            error: 'API key generation failed: ' + error.message,
-            details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+            error: 'API key generation failed: ' + error.message
         });
     }
-}
-
-function generateApiKey(email) {
-    const timestamp = Date.now();
-    const randomStr = Math.random().toString(36).substring(2, 15);
-    const emailHash = Buffer.from(email).toString('base64').substring(0, 8);
-    
-    return `csvw_${emailHash}_${timestamp}_${randomStr}`;
 }
