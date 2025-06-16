@@ -62,9 +62,44 @@ export default async function handler(req, res) {
         const apiKey = generateApiKey(email);
         console.log('✅ API key generated:', apiKey.substring(0, 20) + '...');
         
-        // For now, just return success without saving to database
-        // We'll add database operations once connection is confirmed
-        console.log('✅ Returning test response');
+        // Create user ID
+        const userId = `user_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+        
+        // Save API key to database
+        console.log('💾 Saving API key to database...');
+        const { error: apiKeyInsertError } = await supabase
+            .from('api_keys')
+            .insert({
+                user_id: userId,
+                api_key: apiKey,
+                is_active: true
+            });
+            
+        if (apiKeyInsertError) {
+            console.error('❌ Failed to save API key:', apiKeyInsertError);
+            throw new Error(`Failed to save API key: ${apiKeyInsertError.message}`);
+        }
+        
+        // Save user usage info
+        console.log('👤 Creating user usage record...');
+        const trialEndDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+        const { error: usageInsertError } = await supabase
+            .from('user_usage')
+            .insert({
+                user_id: userId,
+                plan: 'trial',
+                trial_ends_at: trialEndDate.toISOString(),
+                uploads_today: 0,
+                uploads_this_month: 0,
+                total_uploads: 0
+            });
+            
+        if (usageInsertError) {
+            console.error('❌ Failed to save user usage:', usageInsertError);
+            throw new Error(`Failed to save user usage: ${usageInsertError.message}`);
+        }
+        
+        console.log('✅ Database records created successfully');
         
         return res.status(200).json({
             success: true,
