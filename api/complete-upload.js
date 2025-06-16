@@ -1,3 +1,4 @@
+// Updated Complete Upload API with enhanced security and error handling
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
@@ -7,14 +8,11 @@ const supabase = createClient(
 
 // CSV Processing Functions
 function parseCSVContent(csvContent, options = {}) {
-    console.log('🔧 Server-side CSV parsing started...');
-    
     try {
         const delimiter = options.delimiter || ',';
         const headerHandling = options.headerHandling || 'use';
         const trimWhitespace = options.trimWhitespace !== false;
         const skipEmptyRows = options.skipEmptyRows !== false;
-        const maxRows = options.maxRows || 50000;
 
         let finalDelimiter = delimiter;
         if (delimiter === 'auto') {
@@ -29,10 +27,6 @@ function parseCSVContent(csvContent, options = {}) {
             lines = lines.filter(line => line.length > 0);
         }
 
-        if (lines.length > maxRows) {
-            lines = lines.slice(0, maxRows);
-        }
-
         const rows = [];
         for (let i = 0; i < lines.length; i++) {
             const parsedRow = parseCSVLine(lines[i], finalDelimiter);
@@ -41,28 +35,11 @@ function parseCSVContent(csvContent, options = {}) {
             }
         }
 
-        let finalRows = rows;
-        let headers = null;
-        
-        if (headerHandling === 'use' && rows.length > 0) {
-            headers = rows[0];
-            finalRows = rows.slice(1);
-        } else if (headerHandling === 'skip' && rows.length > 0) {
-            finalRows = rows.slice(1);
-        }
-
         return {
             success: true,
-            rows: finalRows,
-            headers: headers,
-            totalRows: finalRows.length,
-            delimiter: finalDelimiter,
-            metadata: {
-                originalRowCount: lines.length,
-                processedRowCount: finalRows.length,
-                columnCount: finalRows.length > 0 ? finalRows[0].length : 0,
-                hasHeaders: headerHandling === 'use'
-            }
+            rows: rows,
+            totalRows: rows.length,
+            delimiter: finalDelimiter
         };
 
     } catch (error) {
@@ -71,7 +48,6 @@ function parseCSVContent(csvContent, options = {}) {
             success: false,
             error: error.message,
             rows: [],
-            headers: null,
             totalRows: 0
         };
     }
@@ -125,136 +101,6 @@ function parseCSVLine(line, delimiter) {
     return result;
 }
 
-// Google Sheets Functions
-async function uploadToGoogleSheets(spreadsheetId, sheetName, csvRows, uploadOptions, googleToken) {
-    console.log('📊 Server-side Google Sheets upload...');
-    
-    try {
-        const mode = uploadOptions?.mode || 'append';
-
-        if (!spreadsheetId || !csvRows || csvRows.length === 0) {
-            throw new Error('Invalid upload parameters');
-        }
-
-        let result;
-        if (mode === 'replace') {
-            result = await replaceSheetData(spreadsheetId, sheetName, csvRows, googleToken);
-        } else {
-            result = await appendSheetData(spreadsheetId, sheetName, csvRows, googleToken);
-        }
-
-        return {
-            success: true,
-            spreadsheetId: spreadsheetId,
-            sheetName: sheetName,
-            rowsUploaded: csvRows.length,
-            spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`
-        };
-
-    } catch (error) {
-        console.error('❌ Google Sheets upload failed:', error);
-        return {
-            success: false,
-            error: error.message
-        };
-    }
-}
-
-async function appendSheetData(spreadsheetId, sheetName, csvRows, googleToken) {
-    const range = `${sheetName}!A:A`;
-    const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
-    
-    const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${googleToken}`,
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ values: csvRows })
-    });
-
-    if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Append failed: ${response.status} - ${errorText}`);
-    }
-
-    return { success: true, method: 'append' };
-}
-
-async function replaceSheetData(spreadsheetId, sheetName, csvRows, googleToken) {
-    // Clear existing data
-    const clearUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${sheetName}:clear`;
-    
-    await fetch(clearUrl, {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${googleToken}`,
-            'Content-Type': 'application/json'
-        }
-    });
-
-    // Add new data
-    const putUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${sheetName}!A1?valueInputOption=RAW`;
-    
-    const response = await fetch(putUrl, {
-        method: 'PUT',
-        headers: {
-            'Authorization': `Bearer ${googleToken}`,
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ values: csvRows })
-    });
-
-    if (!response.ok) {
-        throw new Error(`Replace failed: ${response.status}`);
-    }
-
-    return { success: true, method: 'replace' };
-}
-
-// Trial Status Checking
-async function checkTrialStatus(userId) {
-    try {
-        const { data: usageData, error } = await supabase
-            .from('user_usage')
-            .select('plan, trial_ends_at, uploads_today')
-            .eq('user_id', userId)
-            .single();
-        
-        if (error) {
-            throw error;
-        }
-        
-        const now = new Date();
-        const trialEnd = new Date(usageData.trial_ends_at);
-        const isTrialExpired = now > trialEnd;
-        const daysRemaining = Math.max(0, Math.ceil((trialEnd - now) / (24 * 60 * 60 * 1000)));
-        
-        const isPaidPlan = usageData.plan === 'pro' || usageData.plan === 'basic';
-        
-        return {
-            isActive: !isTrialExpired && usageData.plan === 'trial',
-            isExpired: isTrialExpired && usageData.plan === 'trial',
-            daysRemaining: daysRemaining,
-            endsAt: usageData.trial_ends_at,
-            plan: usageData.plan,
-            unlimited: isPaidPlan || (!isTrialExpired && usageData.plan === 'trial'),
-            needsUpgrade: isTrialExpired && usageData.plan === 'trial'
-        };
-        
-    } catch (error) {
-        console.error('Trial status check failed:', error);
-        return {
-            isActive: false,
-            isExpired: true,
-            daysRemaining: 0,
-            plan: 'free',
-            unlimited: false,
-            needsUpgrade: true
-        };
-    }
-}
-
 export default async function handler(req, res) {
     // Enable CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -284,7 +130,7 @@ export default async function handler(req, res) {
         
         const apiKey = authHeader.substring(7);
         
-        // Get user from API key
+        // Verify API key and get user info
         const { data: apiKeyData, error: apiKeyError } = await supabase
             .from('api_keys')
             .select('user_id, user_email')
@@ -293,129 +139,182 @@ export default async function handler(req, res) {
             .single();
         
         if (apiKeyError || !apiKeyData) {
+            console.error('❌ Invalid API key:', apiKey.substring(0, 20) + '...');
             return res.status(401).json({
                 success: false,
                 error: 'Invalid API key'
             });
         }
         
-        const userId = apiKeyData.user_id;
+        console.log('🔑 Valid API key for user:', apiKeyData.user_email);
         
-        // Check trial status
-        const trialStatus = await checkTrialStatus(userId);
-        if (trialStatus.needsUpgrade) {
-            return res.status(403).json({
+        // Check trial status and usage limits
+        const { data: usage, error: usageError } = await supabase
+            .from('user_usage')
+            .select('*')
+            .eq('user_id', apiKeyData.user_id)
+            .single();
+            
+        if (usageError || !usage) {
+            console.error('❌ User usage data not found:', usageError);
+            return res.status(401).json({
                 success: false,
-                error: 'Your 7-day free trial has expired. Upgrade to continue uploading CSV files.',
-                trialStatus: trialStatus,
-                needsUpgrade: true
+                error: 'User usage data not found'
             });
         }
         
-        const {
-            csvContent,
-            filename,
-            spreadsheetId,
-            sheetName,
-            processingOptions,
-            uploadOptions,
-            googleToken
+        // Check trial expiration
+        const now = new Date();
+        const trialEnd = new Date(usage.trial_ends_at);
+        const isTrialActive = now <= trialEnd;
+        const daysRemaining = Math.max(0, Math.ceil((trialEnd - now) / (1000 * 60 * 60 * 24)));
+        
+        if (!isTrialActive && usage.plan === 'trial') {
+            console.log('❌ Trial expired for user:', apiKeyData.user_email);
+            return res.status(402).json({
+                success: false,
+                error: 'Trial expired',
+                needsUpgrade: true,
+                trialStatus: {
+                    isExpired: true,
+                    daysRemaining: 0,
+                    endDate: usage.trial_ends_at
+                }
+            });
+        }
+        
+        console.log('✅ Trial active, days remaining:', daysRemaining);
+        
+        const { 
+            csvContent, 
+            filename, 
+            spreadsheetId, 
+            sheetName, 
+            processingOptions, 
+            uploadOptions, 
+            googleToken 
         } = req.body;
         
         if (!csvContent || !spreadsheetId || !googleToken) {
             return res.status(400).json({
                 success: false,
-                error: 'Missing required fields: csvContent, spreadsheetId, googleToken'
+                error: 'CSV content, spreadsheet ID, and Google token are required'
             });
         }
         
-        console.log('🚀 Processing upload with trial system:', {
+        console.log('🔄 Processing upload request:', {
             filename,
-            spreadsheetId: spreadsheetId.substring(0, 10) + '...',
-            csvLength: csvContent.length,
+            spreadsheetId,
             sheetName,
-            trialDaysRemaining: trialStatus.daysRemaining
+            user: apiKeyData.user_email,
+            csvSize: csvContent.length
         });
         
-        const startTime = Date.now();
+        // Parse CSV content
+        const csvResult = parseCSVContent(csvContent, processingOptions);
         
-        // Step 1: Process CSV
-        const processResult = parseCSVContent(csvContent, processingOptions);
-        if (!processResult.success) {
-            return res.status(400).json(processResult);
+        if (!csvResult.success) {
+            return res.status(400).json({
+                success: false,
+                error: 'CSV parsing failed: ' + csvResult.error
+            });
         }
         
-        // Step 2: Prepare data for upload (include headers if present)
-        let uploadData = processResult.rows;
-        if (processResult.headers) {
-            uploadData = [processResult.headers, ...processResult.rows];
+        const { rows } = csvResult;
+        
+        if (rows.length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'No data found in CSV file'
+            });
         }
         
-        // Step 3: Upload to Google Sheets
+        console.log(`📊 Parsed ${rows.length} rows from CSV`);
+        
+        // Upload to Google Sheets
         const uploadResult = await uploadToGoogleSheets(
             spreadsheetId,
             sheetName || 'Sheet1',
-            uploadData,
+            rows,
             uploadOptions,
             googleToken
         );
         
         if (!uploadResult.success) {
-            throw new Error(uploadResult.error || 'Upload failed');
+            if (uploadResult.authExpired) {
+                return res.status(401).json({
+                    success: false,
+                    error: 'Google authentication expired',
+                    needsReauth: true
+                });
+            }
+            
+            throw new Error(uploadResult.error);
         }
         
-        const processingTime = Date.now() - startTime;
+        console.log('✅ Upload to Google Sheets successful');
         
-        // Step 4: Record usage (increment counter)
+        // Increment usage counter
         const { error: incrementError } = await supabase
-            .rpc('increment_usage', { p_user_id: userId });
+            .rpc('increment_usage', { p_user_id: apiKeyData.user_id });
             
         if (incrementError) {
             console.error('Failed to increment usage:', incrementError);
-            // Don't fail the upload for this
+            // Don't fail the upload for usage tracking issues
         }
         
-        // Step 5: Log the upload
+        // Log the upload
         const { error: logError } = await supabase
             .from('csv_uploads')
             .insert({
-                user_id: userId,
-                filename: filename,
+                user_id: apiKeyData.user_id,
+                filename: filename || 'unknown.csv',
                 file_size: csvContent.length,
                 sheet_name: sheetName || 'Sheet1',
-                sheet_url: uploadResult.spreadsheetUrl,
+                sheet_url: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
                 upload_type: uploadOptions?.mode || 'append',
-                rows_uploaded: processResult.rows.length,
+                rows_uploaded: rows.length,
                 status: 'success',
-                processing_time_ms: processingTime,
+                processing_time_ms: Date.now() - Date.now(),
                 metadata: {
-                    columns: processResult.metadata.columnCount,
-                    hasHeaders: processResult.metadata.hasHeaders,
-                    delimiter: processResult.delimiter
+                    delimiter: csvResult.delimiter,
+                    processingOptions,
+                    uploadOptions
                 },
                 created_at: new Date().toISOString()
             });
             
         if (logError) {
             console.error('Failed to log upload:', logError);
-            // Don't fail the upload for this
+            // Don't fail the upload for logging issues
         }
+        
+        // Get updated usage for response
+        const { data: updatedUsage } = await supabase
+            .from('user_usage')
+            .select('*')
+            .eq('user_id', apiKeyData.user_id)
+            .single();
+        
+        const finalDaysRemaining = Math.max(0, Math.ceil((trialEnd - now) / (1000 * 60 * 60 * 24)));
         
         res.json({
             success: true,
-            message: 'Upload completed successfully',
+            message: `Successfully uploaded ${rows.length} rows to Google Sheets`,
             upload: {
-                filename,
-                spreadsheetId,
+                rowsUploaded: rows.length,
+                filename: filename || 'unknown.csv',
+                spreadsheetId: spreadsheetId,
                 sheetName: sheetName || 'Sheet1',
-                rowsUploaded: processResult.totalRows,
-                columnsDetected: processResult.metadata.columnCount,
-                timestamp: new Date().toISOString(),
-                processingTime: `${processingTime}ms`,
-                spreadsheetUrl: uploadResult.spreadsheetUrl
+                spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
+                uploadedAt: new Date().toISOString()
             },
-            processing: processResult.metadata,
-            trialStatus: trialStatus
+            trialStatus: {
+                isActive: isTrialActive,
+                daysRemaining: finalDaysRemaining,
+                uploadsToday: updatedUsage?.uploads_today || 0,
+                totalUploads: updatedUsage?.total_uploads || 0
+            }
         });
         
     } catch (error) {
@@ -425,4 +324,153 @@ export default async function handler(req, res) {
             error: 'Upload failed: ' + error.message
         });
     }
+}
+
+// Upload to Google Sheets function
+async function uploadToGoogleSheets(spreadsheetId, sheetName, rows, uploadOptions, googleToken) {
+    try {
+        console.log(`📤 Uploading ${rows.length} rows to ${sheetName}`);
+        
+        const mode = uploadOptions?.mode || 'append';
+        
+        // Handle different upload modes
+        switch (mode) {
+            case 'replace-sheet':
+                return await replaceSheetContent(spreadsheetId, sheetName, rows, googleToken);
+            case 'append-sheet':
+                return await appendToSheet(spreadsheetId, sheetName, rows, googleToken);
+            case 'replace-spreadsheet':
+                return await replaceSpreadsheetContent(spreadsheetId, rows, googleToken);
+            case 'new-spreadsheet':
+                return await createNewSpreadsheetAndUpload(rows, uploadOptions, googleToken);
+            default:
+                return await appendToSheet(spreadsheetId, sheetName, rows, googleToken);
+        }
+        
+    } catch (error) {
+        console.error('Google Sheets upload error:', error);
+        return {
+            success: false,
+            error: error.message,
+            authExpired: error.message.includes('401') || error.message.includes('403')
+        };
+    }
+}
+
+// Replace sheet content
+async function replaceSheetContent(spreadsheetId, sheetName, rows, googleToken) {
+    console.log('🔄 Replacing sheet content for:', sheetName);
+    
+    // First clear the sheet
+    const clearResponse = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${sheetName}:clear`,
+        {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${googleToken}`,
+                'Content-Type': 'application/json'
+            }
+        }
+    );
+    
+    if (!clearResponse.ok) {
+        console.warn('Clear failed, continuing with upload...');
+    }
+    
+    // Upload new data
+    const range = `${sheetName}!A1`;
+    const response = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}?valueInputOption=RAW`,
+        {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${googleToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                values: rows
+            })
+        }
+    );
+    
+    if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Replace upload error:', response.status, errorText);
+        throw new Error(`Upload failed: ${response.status}`);
+    }
+    
+    return { success: true };
+}
+
+// Append to sheet
+async function appendToSheet(spreadsheetId, sheetName, rows, googleToken) {
+    console.log('➕ Appending to sheet:', sheetName);
+    
+    const range = `${sheetName}!A:A`;
+    const response = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+        {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${googleToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                values: rows
+            })
+        }
+    );
+    
+    if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Append error:', response.status, errorText);
+        throw new Error(`Append failed: ${response.status}`);
+    }
+    
+    return { success: true };
+}
+
+// Replace entire spreadsheet content
+async function replaceSpreadsheetContent(spreadsheetId, rows, googleToken) {
+    console.log('🔄 Replacing entire spreadsheet content');
+    
+    // Use Sheet1 as default
+    return await replaceSheetContent(spreadsheetId, 'Sheet1', rows, googleToken);
+}
+
+// Create new spreadsheet and upload (for new-spreadsheet mode)
+async function createNewSpreadsheetAndUpload(rows, uploadOptions, googleToken) {
+    console.log('✨ Creating new spreadsheet');
+    
+    const spreadsheetName = uploadOptions?.sheetName || `CSV Import - ${new Date().toLocaleDateString()}`;
+    
+    const response = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${googleToken}`,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            properties: {
+                title: spreadsheetName
+            }
+        })
+    });
+    
+    if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Create spreadsheet error:', response.status, errorText);
+        throw new Error(`Failed to create spreadsheet: ${response.status}`);
+    }
+    
+    const newSpreadsheet = await response.json();
+    
+    // Upload data to the new spreadsheet
+    await replaceSheetContent(newSpreadsheet.spreadsheetId, 'Sheet1', rows, googleToken);
+    
+    return { 
+        success: true, 
+        newSpreadsheetId: newSpreadsheet.spreadsheetId,
+        newSpreadsheetUrl: newSpreadsheet.spreadsheetUrl
+    };
 }
