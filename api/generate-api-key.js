@@ -1,5 +1,9 @@
-// Let's create a robust backend API endpoint for generating API keys
-// This should go in your Vercel backend at /api/generate-api-key.js
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_KEY
+);
 
 export default async function handler(req, res) {
     // Add CORS headers
@@ -45,16 +49,117 @@ export default async function handler(req, res) {
         
         console.log('✅ Email validation passed:', email);
         
-        // Generate a simple API key (you can make this more sophisticated)
+        // Check if user already exists
+        console.log('🔍 Checking if user exists...');
+        const { data: existingUser, error: userCheckError } = await supabase.auth.admin.listUsers();
+        
+        let userId = null;
+        const existingUserAccount = existingUser?.users?.find(user => user.email === email);
+        
+        if (existingUserAccount) {
+            console.log('✅ User already exists:', existingUserAccount.id);
+            userId = existingUserAccount.id;
+            
+            // Check if they already have an API key
+            const { data: existingApiKey } = await supabase
+                .from('api_keys')
+                .select('api_key')
+                .eq('user_id', userId)
+                .eq('is_active', true)
+                .single();
+                
+            if (existingApiKey) {
+                console.log('✅ Returning existing API key');
+                
+                // Get existing user data
+                const { data: userData } = await supabase
+                    .from('user_usage')
+                    .select('*')
+                    .eq('user_id', userId)
+                    .single();
+                
+                return res.status(200).json({
+                    success: true,
+                    apiKey: existingApiKey.api_key,
+                    user: {
+                        email: email,
+                        name: googleData?.name || email.split('@')[0],
+                        picture: googleData?.picture || null,
+                        userId: userId
+                    },
+                    trial: {
+                        isActive: userData?.plan === 'trial',
+                        unlimited: userData?.plan !== 'trial' || new Date() < new Date(userData?.trial_ends_at)
+                    }
+                });
+            }
+        } else {
+            // Create new user in Supabase Auth
+            console.log('🆕 Creating new user...');
+            const { data: newUser, error: createUserError } = await supabase.auth.admin.createUser({
+                email: email,
+                email_confirm: true,
+                user_metadata: {
+                    name: googleData?.name || email.split('@')[0],
+                    picture: googleData?.picture || null
+                }
+            });
+            
+            if (createUserError) {
+                console.error('❌ Failed to create user:', createUserError);
+                throw createUserError;
+            }
+            
+            userId = newUser.user.id;
+            console.log('✅ New user created:', userId);
+        }
+        
+        // Generate API key
         const apiKey = generateApiKey(email);
         console.log('✅ API key generated');
         
-        // Here you would typically:
-        // 1. Save user to database
-        // 2. Initialize trial period
-        // 3. Set up user account
+        // Calculate trial end date (7 days from now)
+        const trialEndsAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
         
-        // For now, we'll return a success response
+        // Insert API key into database
+        console.log('💾 Saving API key to database...');
+        const { error: apiKeyError } = await supabase
+            .from('api_keys')
+            .insert({
+                user_id: userId,
+                api_key: apiKey,
+                is_active: true,
+                created_at: new Date().toISOString()
+            });
+            
+        if (apiKeyError) {
+            console.error('❌ Failed to save API key:', apiKeyError);
+            throw apiKeyError;
+        }
+        
+        console.log('✅ API key saved to database');
+        
+        // Insert or update user usage data
+        console.log('💾 Setting up user usage...');
+        const { error: usageError } = await supabase
+            .from('user_usage')
+            .upsert({
+                user_id: userId,
+                plan: 'trial',
+                trial_ends_at: trialEndsAt,
+                uploads_today: 0,
+                uploads_this_month: 0,
+                total_uploads: 0,
+                created_at: new Date().toISOString()
+            });
+            
+        if (usageError) {
+            console.error('❌ Failed to setup user usage:', usageError);
+            throw usageError;
+        }
+        
+        console.log('✅ User usage setup complete');
+        
         const responseData = {
             success: true,
             apiKey: apiKey,
@@ -62,13 +167,14 @@ export default async function handler(req, res) {
                 email: email,
                 name: googleData?.name || email.split('@')[0],
                 picture: googleData?.picture || null,
+                userId: userId,
                 createdAt: new Date().toISOString()
             },
             trial: {
                 isActive: true,
                 daysRemaining: 7,
                 unlimited: true,
-                expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+                expiresAt: trialEndsAt
             }
         };
         
@@ -94,9 +200,4 @@ function generateApiKey(email) {
     const emailHash = Buffer.from(email).toString('base64').substring(0, 8);
     
     return `csvw_${emailHash}_${timestamp}_${randomStr}`;
-}
-
-// Alternative simpler version if the above doesn't work
-function generateSimpleApiKey() {
-    return 'csvw_' + Date.now() + '_' + Math.random().toString(36).substring(2, 15);
 }
