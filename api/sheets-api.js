@@ -1,4 +1,4 @@
-// FIXED: sheets-api.js - Added support for shared drives and better error handling
+// FIXED: sheets-api.js - Removed invalid supportsAllDrives from Sheets API calls
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
@@ -87,7 +87,7 @@ export default async function handler(req, res) {
     }
 }
 
-// FIXED: Handle list sheets with shared drive support
+// Handle list sheets with shared drive support
 async function handleListSheets(req, res, apiKeyData, googleToken) {
     try {
         console.log('📊 Fetching Google Sheets for user:', apiKeyData.user_email);
@@ -113,18 +113,18 @@ async function handleListSheets(req, res, apiKeyData, googleToken) {
         const tokenInfo = await tokenTestResponse.json();
         console.log('✅ Google token valid for:', tokenInfo.email);
         
-        // FIXED: Fetch user's Google Sheets with expanded search and shared drive support
+        // Fetch user's Google Sheets with expanded search and shared drive support
         console.log('📊 Fetching Google Sheets from Drive API...');
         
-        // Build comprehensive query parameters
+        // Build comprehensive query parameters (Drive API supports supportsAllDrives)
         const queryParams = new URLSearchParams({
             q: 'mimeType="application/vnd.google-apps.spreadsheet"',
             fields: 'files(id,name,modifiedTime,webViewLink,size,owners,shared,driveId,parents)',
             orderBy: 'modifiedTime desc',
-            pageSize: '100', // Increased from 50
-            supportsAllDrives: 'true', // CRITICAL: Support shared drives
-            includeItemsFromAllDrives: 'true', // CRITICAL: Include shared drive items
-            corpora: 'allDrives' // CRITICAL: Search all drives including shared
+            pageSize: '100',
+            supportsAllDrives: 'true', // This is OK for Drive API
+            includeItemsFromAllDrives: 'true',
+            corpora: 'allDrives'
         });
         
         const response = await fetch(
@@ -159,7 +159,7 @@ async function handleListSheets(req, res, apiKeyData, googleToken) {
         
         console.log(`📊 Initial search found ${sheets.length} spreadsheets`);
         
-        // ENHANCED: If no sheets found, try alternative searches
+        // If no sheets found, try alternative searches
         if (sheets.length === 0) {
             console.log('🔍 No sheets in initial search, trying alternative queries...');
             
@@ -185,43 +185,6 @@ async function handleListSheets(req, res, apiKeyData, googleToken) {
                 const altSheets = altData.files || [];
                 console.log(`📊 Alternative search found ${altSheets.length} spreadsheets`);
                 sheets = altSheets;
-            }
-        }
-        
-        // ENHANCED: Still no sheets? Try without MIME type filter
-        if (sheets.length === 0) {
-            console.log('🔍 Still no sheets, trying broader search...');
-            
-            const broadParams = new URLSearchParams({
-                q: 'name contains ".xlsx" or name contains "sheet" or name contains "spreadsheet"',
-                fields: 'files(id,name,modifiedTime,webViewLink,mimeType,size,owners)',
-                pageSize: '20'
-            });
-            
-            const broadResponse = await fetch(
-                `https://www.googleapis.com/drive/v3/files?${broadParams}`,
-                {
-                    headers: {
-                        'Authorization': `Bearer ${googleToken}`,
-                        'Accept': 'application/json'
-                    }
-                }
-            );
-            
-            if (broadResponse.ok) {
-                const broadData = await broadResponse.json();
-                const allFiles = broadData.files || [];
-                
-                // Filter for spreadsheet-like files
-                const spreadsheetFiles = allFiles.filter(file => 
-                    file.mimeType === 'application/vnd.google-apps.spreadsheet' ||
-                    file.name.toLowerCase().includes('sheet') ||
-                    file.name.toLowerCase().includes('.xlsx') ||
-                    file.name.toLowerCase().includes('spreadsheet')
-                );
-                
-                console.log(`📊 Broad search found ${spreadsheetFiles.length} potential spreadsheets`);
-                sheets = spreadsheetFiles;
             }
         }
         
@@ -309,7 +272,7 @@ async function handleListSheets(req, res, apiKeyData, googleToken) {
     }
 }
 
-// Rest of the functions remain the same but with added shared drive support...
+// FIXED: Handle get sheet tabs - REMOVED supportsAllDrives parameter
 async function handleGetSheetTabs(req, res, apiKeyData, googleToken) {
     try {
         const { spreadsheetId } = req.body;
@@ -323,9 +286,9 @@ async function handleGetSheetTabs(req, res, apiKeyData, googleToken) {
         
         console.log('📄 Fetching sheet tabs for spreadsheet:', spreadsheetId);
         
-        // FIXED: Add shared drive support
+        // FIXED: Removed supportsAllDrives parameter - this is for Sheets API, not Drive API
         const response = await fetch(
-            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets(properties(sheetId,title,index,gridProperties))&supportsAllDrives=true`,
+            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets(properties(sheetId,title,index,gridProperties))`,
             {
                 headers: {
                     'Authorization': `Bearer ${googleToken}`,
@@ -399,7 +362,7 @@ async function handleGetSheetTabs(req, res, apiKeyData, googleToken) {
     }
 }
 
-// Simplified create sheet function
+// Create sheet function
 async function handleCreateSheet(req, res, apiKeyData, googleToken) {
     try {
         const { sheetName } = req.body;
@@ -460,7 +423,7 @@ async function handleCreateSheet(req, res, apiKeyData, googleToken) {
     }
 }
 
-// Simplified create tab function  
+// Create tab function  
 async function handleCreateTab(req, res, apiKeyData, googleToken) {
     try {
         const { spreadsheetId, tabName } = req.body;
