@@ -56,15 +56,7 @@ let headers = null;
         }
 
         // Calculate total rows based on header handling
-        let totalDataRows;
-        if (headerHandling === 'use' || headerHandling === 'skip') {
-            totalDataRows = allRowCount - 1; // Subtract 1 for header/skipped row
-        } else {
-            totalDataRows = allRowCount; // No header row, all rows are data
-        }
-
-        // Calculate total rows
-        const totalDataRows = headerHandling === 'use' ? allRowCount - 1 : allRowCount;
+        const totalDataRows = (headerHandling === 'use' || headerHandling === 'skip') ? allRowCount - 1 : allRowCount;
 
         return {
             success: true,
