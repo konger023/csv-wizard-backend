@@ -41,12 +41,26 @@ function parseCSVContent(csvContent, options = {}) {
             }
         }
 
-        let headers = null;
+let headers = null;
         let dataRows = rows;
         
         if (headerHandling === 'use' && rows.length > 0) {
             headers = rows[0];
             dataRows = rows.slice(1);
+        } else if (headerHandling === 'skip' && rows.length > 0) {
+            // Skip first row but don't use it as headers
+            dataRows = rows.slice(1);
+            // Generate generic headers
+            const columnCount = rows[0] ? rows[0].length : 0;
+            headers = Array.from({ length: columnCount }, (_, i) => `Column ${i + 1}`);
+        }
+
+        // Calculate total rows based on header handling
+        let totalDataRows;
+        if (headerHandling === 'use' || headerHandling === 'skip') {
+            totalDataRows = allRowCount - 1; // Subtract 1 for header/skipped row
+        } else {
+            totalDataRows = allRowCount; // No header row, all rows are data
         }
 
         // Calculate total rows
