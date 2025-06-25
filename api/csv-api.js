@@ -41,19 +41,32 @@ function parseCSVContent(csvContent, options = {}) {
             }
         }
 
-let headers = null;
+        let headers = null;
         let dataRows = rows;
+        
+        // Debug header handling processing
+        console.log('===== HEADER PROCESSING DEBUG =====');
+        console.log('headerHandling value:', headerHandling);
+        console.log('rows.length:', rows.length);
+        console.log('First row (sample):', rows[0]?.slice(0, 3)); // Show first 3 columns
         
         if (headerHandling === 'use' && rows.length > 0) {
             headers = rows[0];
             dataRows = rows.slice(1);
+            console.log('Using first row as headers:', headers?.slice(0, 3));
+            console.log('Data rows count after header removal:', dataRows.length);
         } else if (headerHandling === 'skip' && rows.length > 0) {
             // Skip first row but don't use it as headers
             dataRows = rows.slice(1);
             // Generate generic headers
             const columnCount = rows[0] ? rows[0].length : 0;
             headers = Array.from({ length: columnCount }, (_, i) => `Column ${i + 1}`);
+            console.log('Skipping first row, generated headers:', headers?.slice(0, 3));
+            console.log('Data rows count after skipping first row:', dataRows.length);
+        } else {
+            console.log('No header processing (using all rows as data)');
         }
+        console.log('==================================');
 
         // Calculate total rows based on header handling
         const totalDataRows = (headerHandling === 'use' || headerHandling === 'skip') ? allRowCount - 1 : allRowCount;
@@ -226,6 +239,12 @@ async function handleProcessCSV(req, res, apiKeyData) {
         user: apiKeyData.user_email
     });
     
+    // Debug processing options
+    console.log('===== CSV PROCESSING DEBUG (PREVIEW) =====');
+    console.log('Processing options received:', processingOptions);
+    console.log('Header handling:', processingOptions?.headerHandling);
+    console.log('========================================');
+    
     // Process CSV for preview (limited rows)
     const result = parseCSVContent(csvContent, {
         ...processingOptions,
@@ -328,6 +347,12 @@ async function handleCompleteUpload(req, res, apiKeyData) {
         user: apiKeyData.user_email,
         csvSize: csvContent.length
     });
+    
+    // Debug processing options for upload
+    console.log('===== CSV PROCESSING DEBUG (UPLOAD) =====');
+    console.log('Processing options received:', processingOptions);
+    console.log('Header handling:', processingOptions?.headerHandling);
+    console.log('======================================');
     
     // Parse CSV content for upload
     const csvResult = parseCSVContent(csvContent, {
@@ -468,72 +493,24 @@ async function uploadToGoogleSheets(spreadsheetId, sheetName, rows, uploadOption
         
         if (!spreadsheetResponse.ok) {
             console.error('Failed to access spreadsheet:', spreadsheetResponse.status);
-            
-            if (spreadsheetResponse.status === 401 || spreadsheetResponse.status === 403) {
-                return {
-                    success: false,
-                    error: 'Google authentication expired',
-                    authExpired: true
-                };
-            }
-            
             return {
                 success: false,
-                error: 'Cannot access Google Spreadsheet. Please check the URL and permissions.'
+                error: 'Cannot access spreadsheet. Check permissions.'
             };
         }
         
         const spreadsheetData = await spreadsheetResponse.json();
         const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
         
-        // Check if sheet/tab exists
-        const sheets = spreadsheetData.sheets || [];
-        const targetSheet = sheets.find(s => s.properties.title === sheetName);
-        
-        if (!targetSheet) {
-            console.log(`Creating new tab: ${sheetName}`);
-            
-            // Create new sheet tab
-            const createResponse = await fetch(
-                `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
-                {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${googleToken}`,
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        requests: [{
-                            addSheet: {
-                                properties: {
-                                    title: sheetName,
-                                    gridProperties: {
-                                        rowCount: Math.max(1000, rows.length + 100),
-                                        columnCount: Math.max(26, rows[0]?.length || 10)
-                                    }
-                                }
-                            }
-                        }]
-                    })
-                }
-            );
-            
-            if (!createResponse.ok) {
-                return {
-                    success: false,
-                    error: `Failed to create sheet tab "${sheetName}"`
-                };
-            }
-        }
-        
-        // Determine upload method
-        const mode = uploadOptions?.mode || 'append';
+        // Choose upload method
         let uploadResponse;
-        
-        if (mode === 'replace') {
-            // Clear existing data first
+        if (uploadOptions?.mode === 'replace') {
+            // Replace mode - clear and replace all data
+            const range = `${sheetName}!A:Z`;
+            
+            // First clear the sheet
             await fetch(
-                `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${sheetName}!A:Z:clear`,
+                `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}:clear`,
                 {
                     method: 'POST',
                     headers: {
@@ -543,9 +520,9 @@ async function uploadToGoogleSheets(spreadsheetId, sheetName, rows, uploadOption
                 }
             );
             
-            // Upload new data
+            // Then add new data
             uploadResponse = await fetch(
-                `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${sheetName}!A1`,
+                `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${sheetName}!A1?valueInputOption=USER_ENTERED`,
                 {
                     method: 'PUT',
                     headers: {
@@ -570,7 +547,8 @@ async function uploadToGoogleSheets(spreadsheetId, sheetName, rows, uploadOption
                     },
                     body: JSON.stringify({
                         values: rows,
-                        majorDimension: 'ROWS'
+                        majorDimension: 'ROWS',
+                        valueInputOption: 'USER_ENTERED'
                     })
                 }
             );
@@ -592,22 +570,19 @@ async function uploadToGoogleSheets(spreadsheetId, sheetName, rows, uploadOption
             await applyAutoFormatting(spreadsheetId, sheetName, rows, googleToken);
         }
         
-        console.log('✅ Upload completed successfully');
-        
         return {
             success: true,
             rowsUploaded: rows.length,
-            updatedCells: uploadResult.updatedCells || rows.length * (rows[0]?.length || 0),
-            updatedRange: uploadResult.updatedRange,
             spreadsheetUrl: spreadsheetUrl,
-            sheetName: sheetName
+            updatedRange: uploadResult.updatedRange || `${sheetName}!A1:Z${rows.length}`,
+            updatedCells: uploadResult.updatedCells || rows.length * (rows[0]?.length || 0)
         };
         
     } catch (error) {
-        console.error('❌ Upload error:', error);
+        console.error('Upload error:', error);
         return {
             success: false,
-            error: error.message || 'Upload failed'
+            error: error.message
         };
     }
 }
