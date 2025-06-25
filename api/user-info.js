@@ -68,10 +68,24 @@ export default async function handler(req, res) {
             });
         }
         
-        // Calculate trial status
+        // Calculate trial status with debugging
         const now = new Date();
         const trialEnd = new Date(usageData.trial_ends_at);
-        const isTrialExpired = now > trialEnd;
+        
+        // Debug logging for trial time comparison
+        console.log('Trial Time Debug:', {
+            now: now.toISOString(),
+            trialEnd: trialEnd.toISOString(),
+            nowTime: now.getTime(),
+            trialEndTime: trialEnd.getTime(),
+            timeDiff: trialEnd.getTime() - now.getTime(),
+            hoursRemaining: (trialEnd.getTime() - now.getTime()) / (1000 * 60 * 60)
+        });
+        
+        // More precise trial expiration check - give a few minutes buffer
+        const bufferMinutes = 5; // 5 minute buffer
+        const trialEndWithBuffer = new Date(trialEnd.getTime() + (bufferMinutes * 60 * 1000));
+        const isTrialExpired = now > trialEndWithBuffer;
         const daysRemaining = Math.max(0, Math.ceil((trialEnd - now) / (24 * 60 * 60 * 1000)));
         
         // Check if user has a paid plan
