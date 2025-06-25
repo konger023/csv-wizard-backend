@@ -547,8 +547,7 @@ async function uploadToGoogleSheets(spreadsheetId, sheetName, rows, uploadOption
                     },
                     body: JSON.stringify({
                         values: rows,
-                        majorDimension: 'ROWS',
-                        valueInputOption: 'USER_ENTERED'
+                        majorDimension: 'ROWS'
                     })
                 }
             );
