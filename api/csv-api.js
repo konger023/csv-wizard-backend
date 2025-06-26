@@ -405,12 +405,12 @@ async function handleCompleteUpload(req, res, apiKeyData) {
     
     console.log(`📊 Parsed ${sheetData.length} rows from CSV (including headers)`);
     
-    // CRITICAL DEBUG: Log what's being sent to Google Sheets
+    // CRITICAL DEBUG: Log what's being sent to Google Sheets (limited to prevent crash)
     console.log('🚨 ABOUT TO UPLOAD TO GOOGLE SHEETS 🚨');
     console.log('Data being sent - Total rows:', sheetData.length);
-    console.log('Row 1 EXACT VALUES:', JSON.stringify(sheetData[0]));
-    console.log('Row 2 EXACT VALUES:', JSON.stringify(sheetData[1]));
-    console.log('Row 3 EXACT VALUES:', JSON.stringify(sheetData[2]));
+    console.log('Row 1 FIRST 5 VALUES:', JSON.stringify(sheetData[0]?.slice(0, 5)));
+    console.log('Row 2 FIRST 5 VALUES:', JSON.stringify(sheetData[1]?.slice(0, 5)));
+    console.log('Row 3 FIRST 5 VALUES:', JSON.stringify(sheetData[2]?.slice(0, 5)));
     console.log('🚨 END UPLOAD DEBUG 🚨');
     
     // Upload to Google Sheets
@@ -676,43 +676,7 @@ async function applyAutoFormatting(spreadsheetId, sheetName, rows, googleToken) 
         });
         
         if (requests.length > 0) {
-          // Combined CSV API - Handles all CSV processing and upload operations
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_KEY
-);
-
-// CSV Processing Functions
-function parseCSVContent(csvContent, options = {}) {
-    try {
-        const delimiter = options.delimiter || ',';
-        const headerHandling = options.headerHandling || 'use';
-        const trimWhitespace = options.trimWhitespace !== false;
-        const skipEmptyRows = options.skipEmptyRows !== false;
-        const isPreview = options.isPreview || false;
-        const maxPreviewRows = isPreview ? 10 : Infinity;
-
-        let finalDelimiter = delimiter;
-        if (delimiter === 'auto') {
-            finalDelimiter = detectDelimiter(csvContent);
-        }
-
-        let lines = csvContent.split('\n');
-        if (trimWhitespace) {
-            lines = lines.map(line => line.trim());
-        }
-        if (skipEmptyRows) {
-            lines = lines.filter(line => line.length > 0);
-        }
-
-        // For preview, only process first few rows
-        const processLines = isPreview ? lines.slice(0, maxPreviewRows + 1) : lines;
-        const allRowCount = lines.length;
-
-        const rows = [];
-  await fetch(
+            await fetch(
                 `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
                 {
                     method: 'POST',
