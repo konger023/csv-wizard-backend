@@ -71,11 +71,35 @@ function parseCSVContent(csvContent, options = {}) {
         // Calculate total rows based on header handling
         const totalDataRows = (headerHandling === 'use' || headerHandling === 'skip') ? allRowCount - 1 : allRowCount;
 
+        // Create sheetData for Google Sheets upload (headers + data combined)
+        let sheetData;
+        if (headers && headers.length > 0) {
+            // Include headers as first row, then data rows
+            sheetData = [headers, ...dataRows];
+            console.log('✅ Created sheetData with headers as first row');
+            console.log('🔍 Headers:', headers?.slice(0, 3));
+            console.log('🔍 First data row:', dataRows[0]?.slice(0, 3));
+            console.log('🔍 Second data row:', dataRows[1]?.slice(0, 3));
+        } else {
+            // No headers, just data rows
+            sheetData = dataRows;
+            console.log('⚠️ Created sheetData without headers');
+        }
+        
+        // CRITICAL DEBUG: Show exactly what will be sent to Google Sheets
+        console.log('🚨 FINAL SHEETDATA DEBUG 🚨');
+        console.log('SheetData total rows:', sheetData.length);
+        console.log('SheetData row 1 (headers):', sheetData[0]?.slice(0, 3));
+        console.log('SheetData row 2 (first data):', sheetData[1]?.slice(0, 3)); 
+        console.log('SheetData row 3 (second data):', sheetData[2]?.slice(0, 3));
+        console.log('🚨 END SHEETDATA DEBUG 🚨');
+
         return {
             success: true,
             headers: headers,
-            rows: isPreview ? dataRows : rows,
-            totalRows: isPreview ? totalDataRows : dataRows.length,
+            rows: dataRows, // Processed data rows only (for preview/display)
+            sheetData: sheetData, // Headers + data combined (for Google Sheets upload)
+            totalRows: dataRows.length,
             delimiter: finalDelimiter,
             metadata: {
                 originalRowCount: allRowCount,
@@ -367,22 +391,30 @@ async function handleCompleteUpload(req, res, apiKeyData) {
         });
     }
     
-    const { rows } = csvResult;
+    const { sheetData } = csvResult;
     
-    if (rows.length === 0) {
+    if (!sheetData || sheetData.length === 0) {
         return res.status(400).json({
             success: false,
             error: 'No data found in CSV file'
         });
     }
     
-    console.log(`📊 Parsed ${rows.length} rows from CSV`);
+    console.log(`📊 Parsed ${sheetData.length} rows from CSV (including headers)`);
+    
+    // CRITICAL DEBUG: Log what's being sent to Google Sheets
+    console.log('🚨 ABOUT TO UPLOAD TO GOOGLE SHEETS 🚨');
+    console.log('Data being sent - Total rows:', sheetData.length);
+    console.log('Row 1 (should be headers):', sheetData[0]?.slice(0, 3));
+    console.log('Row 2 (should be first data):', sheetData[1]?.slice(0, 3));
+    console.log('Row 3 (should be second data):', sheetData[2]?.slice(0, 3));
+    console.log('🚨 END UPLOAD DEBUG 🚨');
     
     // Upload to Google Sheets
     const uploadResult = await uploadToGoogleSheets(
         spreadsheetId,
         sheetName || 'Sheet1',
-        rows,
+        sheetData,
         uploadOptions,
         googleToken
     );
