@@ -56,12 +56,10 @@ function parseCSVContent(csvContent, options = {}) {
             console.log('Using first row as headers:', headers?.slice(0, 3));
             console.log('Data rows count after header removal:', dataRows.length);
         } else if (headerHandling === 'skip' && rows.length > 0) {
-            // Skip first row but don't use it as headers
+            // Skip first row and don't create any headers
             dataRows = rows.slice(1);
-            // Generate generic headers
-            const columnCount = rows[0] ? rows[0].length : 0;
-            headers = Array.from({ length: columnCount }, (_, i) => `Column ${i + 1}`);
-            console.log('Skipping first row, generated headers:', headers?.slice(0, 3));
+            headers = null; // No headers for skip mode - just start with data
+            console.log('Skipping first row, NO headers created');
             console.log('Data rows count after skipping first row:', dataRows.length);
         } else {
             console.log('No header processing (using all rows as data)');
@@ -74,24 +72,29 @@ function parseCSVContent(csvContent, options = {}) {
         // Create sheetData for Google Sheets upload (headers + data combined)
         let sheetData;
         if (headers && headers.length > 0) {
-            // Include headers as first row, then data rows
+            // Include headers as first row, then data rows (for "use headers" mode)
             sheetData = [headers, ...dataRows];
             console.log('✅ Created sheetData with headers as first row');
             console.log('🔍 Headers:', headers?.slice(0, 3));
             console.log('🔍 First data row:', dataRows[0]?.slice(0, 3));
             console.log('🔍 Second data row:', dataRows[1]?.slice(0, 3));
         } else {
-            // No headers, just data rows
+            // No headers, just data rows (for "skip" mode)
             sheetData = dataRows;
-            console.log('⚠️ Created sheetData without headers');
+            console.log('✅ Created sheetData without headers - pure data only');
+            console.log('🔍 First row (was 2nd row in CSV):', dataRows[0]?.slice(0, 3));
+            console.log('🔍 Second row (was 3rd row in CSV):', dataRows[1]?.slice(0, 3));
         }
         
         // CRITICAL DEBUG: Show exactly what will be sent to Google Sheets
         console.log('🚨 FINAL SHEETDATA DEBUG 🚨');
+        console.log('Headers value:', headers);
+        console.log('Headers type:', typeof headers);
+        console.log('Headers length:', headers?.length);
         console.log('SheetData total rows:', sheetData.length);
-        console.log('SheetData row 1 (headers):', sheetData[0]?.slice(0, 3));
-        console.log('SheetData row 2 (first data):', sheetData[1]?.slice(0, 3)); 
-        console.log('SheetData row 3 (second data):', sheetData[2]?.slice(0, 3));
+        console.log('SheetData row 1:', JSON.stringify(sheetData[0]?.slice(0, 5)));
+        console.log('SheetData row 2:', JSON.stringify(sheetData[1]?.slice(0, 5))); 
+        console.log('SheetData row 3:', JSON.stringify(sheetData[2]?.slice(0, 5)));
         console.log('🚨 END SHEETDATA DEBUG 🚨');
 
         return {
@@ -405,9 +408,9 @@ async function handleCompleteUpload(req, res, apiKeyData) {
     // CRITICAL DEBUG: Log what's being sent to Google Sheets
     console.log('🚨 ABOUT TO UPLOAD TO GOOGLE SHEETS 🚨');
     console.log('Data being sent - Total rows:', sheetData.length);
-    console.log('Row 1 (should be headers):', sheetData[0]?.slice(0, 3));
-    console.log('Row 2 (should be first data):', sheetData[1]?.slice(0, 3));
-    console.log('Row 3 (should be second data):', sheetData[2]?.slice(0, 3));
+    console.log('Row 1 EXACT VALUES:', JSON.stringify(sheetData[0]));
+    console.log('Row 2 EXACT VALUES:', JSON.stringify(sheetData[1]));
+    console.log('Row 3 EXACT VALUES:', JSON.stringify(sheetData[2]));
     console.log('🚨 END UPLOAD DEBUG 🚨');
     
     // Upload to Google Sheets
@@ -673,7 +676,43 @@ async function applyAutoFormatting(spreadsheetId, sheetName, rows, googleToken) 
         });
         
         if (requests.length > 0) {
-            await fetch(
+          // Combined CSV API - Handles all CSV processing and upload operations
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_KEY
+);
+
+// CSV Processing Functions
+function parseCSVContent(csvContent, options = {}) {
+    try {
+        const delimiter = options.delimiter || ',';
+        const headerHandling = options.headerHandling || 'use';
+        const trimWhitespace = options.trimWhitespace !== false;
+        const skipEmptyRows = options.skipEmptyRows !== false;
+        const isPreview = options.isPreview || false;
+        const maxPreviewRows = isPreview ? 10 : Infinity;
+
+        let finalDelimiter = delimiter;
+        if (delimiter === 'auto') {
+            finalDelimiter = detectDelimiter(csvContent);
+        }
+
+        let lines = csvContent.split('\n');
+        if (trimWhitespace) {
+            lines = lines.map(line => line.trim());
+        }
+        if (skipEmptyRows) {
+            lines = lines.filter(line => line.length > 0);
+        }
+
+        // For preview, only process first few rows
+        const processLines = isPreview ? lines.slice(0, maxPreviewRows + 1) : lines;
+        const allRowCount = lines.length;
+
+        const rows = [];
+  await fetch(
                 `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
                 {
                     method: 'POST',
