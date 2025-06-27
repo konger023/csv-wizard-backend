@@ -35,6 +35,55 @@ export default async function handler(req, res) {
             return res.status(401).json({ error: 'Invalid API key' });
         }
 
+        // SECURITY FIX: Add trial validation to prevent expired users from uploading
+        console.log('🔍 Checking trial status for user:', user.email);
+        
+        // Check trial status
+        const { data: usage, error: usageError } = await supabase
+            .from('user_usage')
+            .select('*')
+            .eq('user_id', user.user_id)
+            .single();
+            
+        if (usageError || !usage) {
+            console.log('❌ User usage data not found for:', user.email);
+            return res.status(401).json({
+                success: false,
+                error: 'User usage data not found'
+            });
+        }
+        
+        // Check trial expiration
+        const now = new Date();
+        const trialEnd = new Date(usage.trial_ends_at);
+        const isTrialActive = now <= trialEnd;
+        const daysRemaining = Math.max(0, Math.ceil((trialEnd - now) / (1000 * 60 * 60 * 24)));
+        
+        console.log('📊 Trial status check:', {
+            user: user.email,
+            plan: usage.plan,
+            trialEnd: usage.trial_ends_at,
+            now: now.toISOString(),
+            isTrialActive,
+            daysRemaining
+        });
+        
+        if (!isTrialActive && usage.plan === 'trial') {
+            console.log('❌ BLOCKED: Trial expired for user:', user.email);
+            return res.status(402).json({
+                success: false,
+                error: 'Trial expired',
+                needsUpgrade: true,
+                trialStatus: {
+                    isExpired: true,
+                    daysRemaining: 0,
+                    endDate: usage.trial_ends_at
+                }
+            });
+        }
+        
+        console.log('✅ Trial validation passed for user:', user.email);
+
         const {
             csvContent,
             csvFileName,
@@ -276,13 +325,13 @@ async function appendSheetData(sheets, spreadsheetId, sheetName, parsedData) {
 
 async function replaceSheetData(sheets, spreadsheetId, sheetName, parsedData) {
     try {
-        // Clear existing data
+        // Clear existing data first
         await sheets.spreadsheets.values.clear({
             spreadsheetId,
             range: `${sheetName}!A:Z`
         });
         
-        // Write new data
+        // Add new data
         const response = await sheets.spreadsheets.values.update({
             spreadsheetId,
             range: `${sheetName}!A1`,
@@ -292,7 +341,7 @@ async function replaceSheetData(sheets, spreadsheetId, sheetName, parsedData) {
             }
         });
         
-        // Apply formatting based on column types
+        // Apply smart formatting
         await applySmartFormatting(sheets, spreadsheetId, sheetName, parsedData);
         
         return {
