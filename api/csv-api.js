@@ -272,8 +272,19 @@ async function handleProcessCSV(req, res, apiKeyData) {
     console.log('Header handling:', processingOptions?.headerHandling);
     console.log('========================================');
     
-    // Process CSV for preview (limited rows)
-    const result = parseCSVContent(csvContent, {
+    // SECURITY: Sanitize CSV content to remove any file URLs or unwanted data
+    let sanitizedContent = csvContent;
+    if (typeof csvContent === 'string') {
+        // Remove any file:// URLs that might have been accidentally appended
+        sanitizedContent = csvContent.replace(/file:\/\/\/[^\s\n\r,]*/g, '');
+        // Remove any other suspicious URL patterns
+        sanitizedContent = sanitizedContent.replace(/^https?:\/\/[^\s\n\r,]*$/gm, '');
+        // Clean up any empty lines that may have been left
+        sanitizedContent = sanitizedContent.replace(/\n\s*\n/g, '\n').trim();
+    }
+    
+    // Process CSV for preview (limited rows) using sanitized content
+    const result = parseCSVContent(sanitizedContent, {
         ...processingOptions,
         isPreview: true
     });
@@ -367,6 +378,17 @@ async function handleCompleteUpload(req, res, apiKeyData) {
         });
     }
     
+    // SECURITY: Sanitize CSV content to remove any file URLs or unwanted data
+    let sanitizedContent = csvContent;
+    if (typeof csvContent === 'string') {
+        // Remove any file:// URLs that might have been accidentally appended
+        sanitizedContent = csvContent.replace(/file:\/\/\/[^\s\n\r,]*/g, '');
+        // Remove any other suspicious URL patterns
+        sanitizedContent = sanitizedContent.replace(/^https?:\/\/[^\s\n\r,]*$/gm, '');
+        // Clean up any empty lines that may have been left
+        sanitizedContent = sanitizedContent.replace(/\n\s*\n/g, '\n').trim();
+    }
+    
     console.log('🔄 Processing complete upload:', {
         filename,
         spreadsheetId,
@@ -381,8 +403,8 @@ async function handleCompleteUpload(req, res, apiKeyData) {
     console.log('Header handling:', processingOptions?.headerHandling);
     console.log('======================================');
     
-    // Parse CSV content for upload
-    const csvResult = parseCSVContent(csvContent, {
+    // Parse CSV content for upload (using sanitized content)
+    const csvResult = parseCSVContent(sanitizedContent, {
         ...processingOptions,
         isPreview: false
     });
