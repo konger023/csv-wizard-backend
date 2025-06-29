@@ -445,17 +445,26 @@ async function handleCreateTab(req, res, apiKeyData, googleToken) {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    requests: [{
-                        addSheet: {
-                            properties: {
-                                title: tabName.trim(),
-                                gridProperties: {
-                                    rowCount: 1000,
-                                    columnCount: 26
+                    requests: [
+                        // First: Create the new custom tab
+                        {
+                            addSheet: {
+                                properties: {
+                                    title: tabName.trim(),
+                                    gridProperties: {
+                                        rowCount: 1000,
+                                        columnCount: 26
+                                    }
                                 }
                             }
+                        },
+                        // Second: Delete the default "Sheet1" tab (sheetId: 0)
+                        {
+                            deleteSheet: {
+                                sheetId: 0
+                            }
                         }
-                    }]
+                    ]
                 })
             }
         );
