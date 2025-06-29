@@ -71,10 +71,12 @@ export default async function handler(req, res) {
                 return await handleCreateSheet(req, res, apiKeyData, googleToken);
             case 'create-tab':
                 return await handleCreateTab(req, res, apiKeyData, googleToken);
+            case 'delete-sheet':
+                return await handleDeleteSheet(req, res, apiKeyData, googleToken);
             default:
                 return res.status(400).json({
                     success: false,
-                    error: `Unknown action: ${action}. Available actions: list-sheets, get-sheet-tabs, create-sheet, create-tab`
+                    error: `Unknown action: ${action}. Available actions: list-sheets, get-sheet-tabs, create-sheet, create-tab, delete-sheet`
                 });
         }
         
@@ -446,12 +448,14 @@ async function handleCreateTab(req, res, apiKeyData, googleToken) {
                 },
                 body: JSON.stringify({
                     requests: [{
-                        updateSheetProperties: {
+                        addSheet: {
                             properties: {
-                                sheetId: 0, // Sheet1 always has sheetId 0 in new spreadsheets
-                                title: tabName.trim()
-                            },
-                            fields: 'title'
+                                title: tabName.trim(),
+                                gridProperties: {
+                                    rowCount: 1000,
+                                    columnCount: 26
+                                }
+                            }
                         }
                     }]
                 })
@@ -464,19 +468,19 @@ async function handleCreateTab(req, res, apiKeyData, googleToken) {
         }
         
         const result = await response.json();
-        const updatedSheet = result.replies[0].updateSheetProperties;
+        const newSheet = result.replies[0].addSheet.properties;
         
-        console.log(`✅ Successfully renamed Sheet1 to "${tabName.trim()}"`);
+        console.log(`✅ Successfully created new tab "${tabName.trim()}"`);
         
         return res.json({
             success: true,
             tab: {
-                id: 0, // Sheet1 always has sheetId 0
-                title: tabName.trim(),
+                id: newSheet.sheetId,
+                title: newSheet.title,
                 spreadsheetId: spreadsheetId,
-                editUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=0`
+                editUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=${newSheet.sheetId}`
             },
-            message: `Successfully renamed tab to "${tabName.trim()}"`
+            message: `Successfully created tab "${newSheet.title}"`
         });
         
     } catch (error) {
@@ -484,6 +488,62 @@ async function handleCreateTab(req, res, apiKeyData, googleToken) {
         return res.status(500).json({
             success: false,
             error: 'Failed to create tab: ' + error.message
+        });
+    }
+}
+
+// Delete sheet function
+async function handleDeleteSheet(req, res, apiKeyData, googleToken) {
+    try {
+        const { spreadsheetId, sheetId } = req.body;
+        
+        if (!spreadsheetId || sheetId === undefined) {
+            return res.status(400).json({
+                success: false,
+                error: 'Spreadsheet ID and sheet ID required'
+            });
+        }
+        
+        console.log(`🗑️ Deleting sheet ${sheetId} from spreadsheet ${spreadsheetId}`);
+        
+        // Delete sheet
+        const response = await fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${googleToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    requests: [{
+                        deleteSheet: {
+                            sheetId: parseInt(sheetId)
+                        }
+                    }]
+                })
+            }
+        );
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Google Sheets API error: ${response.status} - ${errorText}`);
+        }
+        
+        const result = await response.json();
+        
+        console.log(`✅ Successfully deleted sheet ${sheetId}`);
+        
+        return res.json({
+            success: true,
+            message: `Successfully deleted sheet`
+        });
+        
+    } catch (error) {
+        console.error('❌ Delete sheet error:', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to delete sheet: ' + error.message
         });
     }
 }
