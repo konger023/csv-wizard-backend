@@ -445,26 +445,15 @@ async function handleCreateTab(req, res, apiKeyData, googleToken) {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    requests: [
-                        // First: Create the new custom tab
-                        {
-                            addSheet: {
-                                properties: {
-                                    title: tabName.trim(),
-                                    gridProperties: {
-                                        rowCount: 1000,
-                                        columnCount: 26
-                                    }
-                                }
-                            }
-                        },
-                        // Second: Delete the default "Sheet1" tab (sheetId: 0)
-                        {
-                            deleteSheet: {
-                                sheetId: 0
-                            }
+                    requests: [{
+                        updateSheetProperties: {
+                            properties: {
+                                sheetId: 0, // Sheet1 always has sheetId 0 in new spreadsheets
+                                title: tabName.trim()
+                            },
+                            fields: 'title'
                         }
-                    ]
+                    }]
                 })
             }
         );
@@ -475,24 +464,19 @@ async function handleCreateTab(req, res, apiKeyData, googleToken) {
         }
         
         const result = await response.json();
-        const newSheet = result.replies[0].addSheet.properties;
+        const updatedSheet = result.replies[0].updateSheetProperties;
         
-        // Check if Sheet1 deletion was successful (silently)
-        if (result.replies.length > 1 && result.replies[1].deleteSheet) {
-            console.log('✅ Successfully deleted Sheet1');
-        } else if (result.replies.length > 1 && result.replies[1].error) {
-            console.warn('⚠️ Failed to delete Sheet1 (non-critical):', result.replies[1].error);
-        }
+        console.log(`✅ Successfully renamed Sheet1 to "${tabName.trim()}"`);
         
         return res.json({
             success: true,
             tab: {
-                id: newSheet.sheetId,
-                title: newSheet.title,
+                id: 0, // Sheet1 always has sheetId 0
+                title: tabName.trim(),
                 spreadsheetId: spreadsheetId,
-                editUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=${newSheet.sheetId}`
+                editUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit#gid=0`
             },
-            message: `Successfully created tab "${newSheet.title}"`
+            message: `Successfully renamed tab to "${tabName.trim()}"`
         });
         
     } catch (error) {
