@@ -477,6 +477,13 @@ async function handleCreateTab(req, res, apiKeyData, googleToken) {
         const result = await response.json();
         const newSheet = result.replies[0].addSheet.properties;
         
+        // Check if Sheet1 deletion was successful (silently)
+        if (result.replies.length > 1 && result.replies[1].deleteSheet) {
+            console.log('✅ Successfully deleted Sheet1');
+        } else if (result.replies.length > 1 && result.replies[1].error) {
+            console.warn('⚠️ Failed to delete Sheet1 (non-critical):', result.replies[1].error);
+        }
+        
         return res.json({
             success: true,
             tab: {
