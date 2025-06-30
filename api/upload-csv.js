@@ -110,8 +110,9 @@ export default async function handler(req, res) {
         
         const sheets = google.sheets({ version: 'v4', auth });
         
-        // Parse CSV with your secret parsing logic
-        const parsedData = await parseCSVWithMagic(csvContent);
+        // Sanitize and parse CSV with your secret parsing logic
+        const sanitizedContent = sanitizeCSVContent(csvContent);
+        const parsedData = await parseCSVWithMagic(sanitizedContent);
         
         // Create new tab if needed
         if (createNewTab) {
@@ -436,4 +437,25 @@ function formatDate(value) {
 
 function formatNumber(value) {
     return parseFloat(value);
+}
+
+// Sanitize CSV content - moved from frontend for security
+function sanitizeCSVContent(content) {
+    if (typeof content !== 'string') {
+        return content;
+    }
+    
+    // Remove any file:// URLs that might have been accidentally appended
+    let sanitized = content.replace(/file:\/\/\/[^\s\n\r,]*/g, '');
+    // Remove any other suspicious URL patterns that appear as standalone lines
+    sanitized = sanitized.replace(/^https?:\/\/[^\s\n\r,]*$/gm, '');
+    // Clean up any empty lines that may have been left
+    sanitized = sanitized.replace(/\n\s*\n/g, '\n').trim();
+    
+    if (sanitized !== content) {
+        console.log('🧹 CSV content was sanitized - removed unwanted URLs');
+        console.log('Original length:', content.length, 'Sanitized length:', sanitized.length);
+    }
+    
+    return sanitized;
 }
