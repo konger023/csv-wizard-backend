@@ -24,22 +24,30 @@ function calculateProgressivePricing(daysRemaining, isTrialUser) {
     let urgencyMessage = null;
     let showDiscount = false;
     
+    // Progressive pricing strategy - price increases daily
+    let nextDayPrice = null;
+    
     if (daysRemaining === 5) {
-        currentPrice = 7.99;
-        discount = 2.00;
-        urgencyMessage = "Limited Time: Save $2.00 - Upgrade now!";
+        currentPrice = 6.99;
+        discount = 3.00;
+        nextDayPrice = 7.99;
+        urgencyMessage = "Save $3.00 today - Price increases to $7.99 tomorrow!";
         showDiscount = true;
     } else if (daysRemaining === 6) {
+        currentPrice = 7.99;
+        discount = 2.00;
+        nextDayPrice = 8.99;
+        urgencyMessage = "Save $2.00 today - Price increases to $8.99 tomorrow!";
+        showDiscount = true;
+    } else if (daysRemaining === 7) {
         currentPrice = 8.99;
         discount = 1.00;
-        urgencyMessage = "Last Chance: Save $1.00 - Only 1 day left at this price!";
+        nextDayPrice = 9.99;
+        urgencyMessage = "Final discount! Save $1.00 - Full price $9.99 starts tomorrow!";
         showDiscount = true;
     } else if (daysRemaining <= 4 && daysRemaining > 0) {
         // Days 1-4: Show early bird messaging
         urgencyMessage = `Only ${daysRemaining} day${daysRemaining === 1 ? '' : 's'} left in your trial`;
-        showDiscount = false;
-    } else if (daysRemaining === 7) {
-        urgencyMessage = "Your 7-day free trial is just beginning!";
         showDiscount = false;
     }
     
@@ -49,6 +57,7 @@ function calculateProgressivePricing(daysRemaining, isTrialUser) {
         discount: discount,
         urgencyMessage: urgencyMessage,
         showDiscount: showDiscount,
+        nextDayPrice: nextDayPrice,
         daysLeft: daysRemaining
     };
 }
