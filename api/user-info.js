@@ -5,6 +5,54 @@ const supabase = createClient(
     process.env.SUPABASE_SERVICE_KEY
 );
 
+// Progressive pricing calculation based on trial days remaining
+function calculateProgressivePricing(daysRemaining, isTrialUser) {
+    // Only apply progressive pricing to trial users
+    if (!isTrialUser) {
+        return {
+            currentPrice: 9.99,
+            regularPrice: 9.99,
+            discount: 0,
+            urgencyMessage: null,
+            showDiscount: false
+        };
+    }
+    
+    // Progressive pricing strategy
+    let currentPrice = 9.99;
+    let discount = 0;
+    let urgencyMessage = null;
+    let showDiscount = false;
+    
+    if (daysRemaining === 5) {
+        currentPrice = 7.99;
+        discount = 2.00;
+        urgencyMessage = "Limited Time: Save $2.00 - Upgrade now!";
+        showDiscount = true;
+    } else if (daysRemaining === 6) {
+        currentPrice = 8.99;
+        discount = 1.00;
+        urgencyMessage = "Last Chance: Save $1.00 - Only 1 day left at this price!";
+        showDiscount = true;
+    } else if (daysRemaining <= 4 && daysRemaining > 0) {
+        // Days 1-4: Show early bird messaging
+        urgencyMessage = `Only ${daysRemaining} day${daysRemaining === 1 ? '' : 's'} left in your trial`;
+        showDiscount = false;
+    } else if (daysRemaining === 7) {
+        urgencyMessage = "Your 7-day free trial is just beginning!";
+        showDiscount = false;
+    }
+    
+    return {
+        currentPrice: currentPrice,
+        regularPrice: 9.99,
+        discount: discount,
+        urgencyMessage: urgencyMessage,
+        showDiscount: showDiscount,
+        daysLeft: daysRemaining
+    };
+}
+
 export default async function handler(req, res) {
     // Enable CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -72,15 +120,15 @@ export default async function handler(req, res) {
         const now = new Date();
         const trialEnd = new Date(usageData.trial_ends_at);
         
-        // Debug logging for trial time comparison
-        console.log('Trial Time Debug:', {
-            now: now.toISOString(),
-            trialEnd: trialEnd.toISOString(),
-            nowTime: now.getTime(),
-            trialEndTime: trialEnd.getTime(),
-            timeDiff: trialEnd.getTime() - now.getTime(),
-            hoursRemaining: (trialEnd.getTime() - now.getTime()) / (1000 * 60 * 60)
-        });
+        // Enhanced debug logging for trial time comparison
+        console.log('===== TRIAL TIME DEBUG =====');
+        console.log('Current time (server):', now.toISOString(), '| Timestamp:', now.getTime());
+        console.log('Trial end time:', trialEnd.toISOString(), '| Timestamp:', trialEnd.getTime());
+        console.log('Time difference (ms):', trialEnd.getTime() - now.getTime());
+        console.log('Hours remaining:', (trialEnd.getTime() - now.getTime()) / (1000 * 60 * 60));
+        console.log('Days remaining (raw):', (trialEnd.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+        console.log('User plan:', usageData.plan);
+        console.log('Trial end from DB:', usageData.trial_ends_at);
         
         // More precise trial expiration check - give a few minutes buffer
         const bufferMinutes = 5; // 5 minute buffer
@@ -100,6 +148,18 @@ export default async function handler(req, res) {
             needsUpgrade: isTrialExpired && usageData.plan === 'trial'
         };
         
+        // Calculate progressive pricing based on days remaining
+        const pricingInfo = calculateProgressivePricing(daysRemaining, usageData.plan === 'trial');
+        
+        // Debug final trial status
+        console.log('===== FINAL TRIAL STATUS =====');
+        console.log('isTrialExpired:', isTrialExpired);
+        console.log('daysRemaining:', daysRemaining);
+        console.log('isPaidPlan:', isPaidPlan);
+        console.log('Progressive pricing:', JSON.stringify(pricingInfo, null, 2));
+        console.log('Final trialStatus:', JSON.stringify(trialStatus, null, 2));
+        console.log('===============================');
+        
         res.json({
             success: true,
             user: {
@@ -109,6 +169,7 @@ export default async function handler(req, res) {
                 memberSince: usageData.created_at
             },
             trial: trialStatus,
+            pricing: pricingInfo,
             usage: {
                 today: usageData.uploads_today || 0,
                 thisMonth: usageData.uploads_this_month || 0,
