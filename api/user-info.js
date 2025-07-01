@@ -170,7 +170,7 @@ export default async function handler(req, res) {
         const trialStatus = {
             isActive: !isTrialExpired && usageData.plan === 'trial',
             isExpired: isTrialExpired && usageData.plan === 'trial',
-            daysRemaining: currentTrialDay,
+            daysRemaining: daysRemaining, // Keep original days remaining for frontend calculation
             endsAt: usageData.trial_ends_at,
             unlimited: isPaidPlan || (!isTrialExpired && usageData.plan === 'trial'),
             needsUpgrade: isTrialExpired && usageData.plan === 'trial'
