@@ -134,7 +134,24 @@ export default async function handler(req, res) {
         const bufferMinutes = 5; // 5 minute buffer
         const trialEndWithBuffer = new Date(trialEnd.getTime() + (bufferMinutes * 60 * 1000));
         const isTrialExpired = now > trialEndWithBuffer;
-        const daysRemaining = Math.max(0, Math.ceil((trialEnd - now) / (24 * 60 * 60 * 1000)));
+        
+        // Calculate days remaining more precisely for pricing logic
+        const millisecondsRemaining = trialEnd.getTime() - now.getTime();
+        const hoursRemaining = millisecondsRemaining / (1000 * 60 * 60);
+        const daysRemainingFloat = millisecondsRemaining / (24 * 60 * 60 * 1000);
+        const daysRemaining = Math.max(0, Math.ceil(daysRemainingFloat));
+        
+        // Calculate which "trial day" user is on (1-7) for pricing logic
+        const totalTrialDays = 7;
+        const trialDayNumber = totalTrialDays - Math.floor(daysRemainingFloat);
+        const adjustedDaysRemaining = Math.max(0, totalTrialDays - trialDayNumber);
+        
+        console.log('📊 TRIAL CALCULATION DEBUG:');
+        console.log('- Hours remaining:', hoursRemaining);
+        console.log('- Days remaining (float):', daysRemainingFloat);
+        console.log('- Days remaining (ceil):', daysRemaining);
+        console.log('- Trial day number (1-7):', trialDayNumber);
+        console.log('- Adjusted days for pricing:', adjustedDaysRemaining);
         
         // Check if user has a paid plan
         const isPaidPlan = usageData.plan === 'pro' || usageData.plan === 'basic';
@@ -142,19 +159,20 @@ export default async function handler(req, res) {
         const trialStatus = {
             isActive: !isTrialExpired && usageData.plan === 'trial',
             isExpired: isTrialExpired && usageData.plan === 'trial',
-            daysRemaining: daysRemaining,
+            daysRemaining: adjustedDaysRemaining,
             endsAt: usageData.trial_ends_at,
             unlimited: isPaidPlan || (!isTrialExpired && usageData.plan === 'trial'),
             needsUpgrade: isTrialExpired && usageData.plan === 'trial'
         };
         
-        // Calculate progressive pricing based on days remaining
-        const pricingInfo = calculateProgressivePricing(daysRemaining, usageData.plan === 'trial');
+        // Calculate progressive pricing based on adjusted days remaining
+        const pricingInfo = calculateProgressivePricing(adjustedDaysRemaining, usageData.plan === 'trial');
         
         // Debug final trial status
         console.log('===== FINAL TRIAL STATUS =====');
         console.log('isTrialExpired:', isTrialExpired);
-        console.log('daysRemaining:', daysRemaining);
+        console.log('daysRemaining (original):', daysRemaining);
+        console.log('daysRemaining (adjusted):', adjustedDaysRemaining);
         console.log('isPaidPlan:', isPaidPlan);
         console.log('Progressive pricing:', JSON.stringify(pricingInfo, null, 2));
         console.log('Final trialStatus:', JSON.stringify(trialStatus, null, 2));
