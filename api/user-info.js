@@ -6,12 +6,13 @@ const supabase = createClient(
 );
 
 // Progressive pricing calculation based on trial days remaining
-function calculateProgressivePricing(daysRemaining, isTrialUser) {
-    // Only apply progressive pricing to trial users
+function calculateProgressivePricing(daysRemaining, isTrialUser, planTier = 'basic') {
+    // For paid users, return their plan pricing
     if (!isTrialUser) {
+        const basePrice = planTier === 'enterprise' ? 15.99 : 9.99;
         return {
-            currentPrice: 9.99,
-            regularPrice: 9.99,
+            currentPrice: basePrice,
+            regularPrice: basePrice,
             discount: 0,
             urgencyMessage: null,
             showDiscount: false
@@ -165,7 +166,11 @@ export default async function handler(req, res) {
         console.log('- Using currentTrialDay for pricing logic');
         
         // Check if user has a paid plan
-        const isPaidPlan = usageData.plan === 'pro' || usageData.plan === 'basic';
+        const isPaidPlan = usageData.plan === 'pro' || usageData.plan === 'basic' || usageData.plan === 'enterprise';
+        
+        // Determine plan tier for feature restrictions
+        const isBasicPlan = usageData.plan === 'pro' || usageData.plan === 'basic'; // $9.99 plans
+        const isEnterprisePlan = usageData.plan === 'enterprise'; // $15.99 plan
         
         const trialStatus = {
             isActive: !isTrialExpired && usageData.plan === 'trial',
@@ -177,7 +182,8 @@ export default async function handler(req, res) {
         };
         
         // Calculate progressive pricing based on current trial day (5, 6, 7)
-        const pricingInfo = calculateProgressivePricing(currentTrialDay, usageData.plan === 'trial');
+        const planTier = isEnterprisePlan ? 'enterprise' : (isBasicPlan ? 'basic' : 'trial');
+        const pricingInfo = calculateProgressivePricing(currentTrialDay, usageData.plan === 'trial', planTier);
         
         // Debug final trial status
         console.log('===== FINAL TRIAL STATUS =====');
@@ -195,6 +201,8 @@ export default async function handler(req, res) {
                 userId: userId,
                 email: userEmail, // Use email from API key record
                 plan: usageData.plan,
+                planTier: isEnterprisePlan ? 'enterprise' : (isBasicPlan ? 'basic' : 'trial'),
+                hasEnterpriseFeatures: isEnterprisePlan,
                 memberSince: usageData.created_at
             },
             trial: trialStatus,
