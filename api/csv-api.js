@@ -233,10 +233,24 @@ export default async function handler(req, res) {
                 return await handleProcessCSV(req, res, apiKeyData);
             case 'complete-upload':
                 return await handleCompleteUpload(req, res, apiKeyData);
+            case 'create-sheet':
+                return await handleCreateSheetRedirect(req, res, apiKeyData);
+            case 'bulk-queue-create':
+                return await handleBulkQueueCreate(req, res, apiKeyData);
+            case 'bulk-queue-add-file':
+                return await handleBulkQueueAddFile(req, res, apiKeyData);
+            case 'bulk-queue-remove-file':
+                return await handleBulkQueueRemoveFile(req, res, apiKeyData);
+            case 'bulk-queue-list':
+                return await handleBulkQueueList(req, res, apiKeyData);
+            case 'bulk-queue-update-targets':
+                return await handleBulkQueueUpdateTargets(req, res, apiKeyData);
+            case 'bulk-queue-execute':
+                return await handleBulkQueueExecute(req, res, apiKeyData);
             default:
                 return res.status(400).json({
                     success: false,
-                    error: `Unknown action: ${action}. Available actions: process-csv, complete-upload`
+                    error: `Unknown action: ${action}. Available actions: process-csv, complete-upload, create-sheet, bulk-queue-create, bulk-queue-add-file, bulk-queue-remove-file, bulk-queue-list, bulk-queue-update-targets, bulk-queue-execute`
                 });
         }
         
@@ -360,6 +374,64 @@ async function handleCompleteUpload(req, res, apiKeyData) {
             }
         });
     }
+    
+    // Plan-based feature validation for enterprise features
+    const { data: userPlan, error: planError } = await supabase
+        .from('user_usage')
+        .select('plan')
+        .eq('user_id', apiKeyData.user_id)
+        .single();
+
+    if (planError) {
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to verify user plan'
+        });
+    }
+
+    const isEnterprisePlan = userPlan.plan === 'enterprise';
+
+    // Check for enterprise-only features in the request
+    const enterpriseFeatures = [];
+
+    // Check for pattern matching feature
+    if (req.body.filePattern && req.body.filePattern.trim() !== '') {
+        if (!isEnterprisePlan) {
+            enterpriseFeatures.push('Smart Pattern Matching');
+        }
+    }
+
+    // Check for scheduling features
+    if (req.body.scheduleOptions && (
+        req.body.scheduleOptions.frequency !== 'none' || 
+        req.body.scheduleOptions.enabled === true
+    )) {
+        if (!isEnterprisePlan) {
+            enterpriseFeatures.push('Scheduled Upload');
+        }
+    }
+
+    // Check for advanced processing options
+    if (req.body.processingOptions && req.body.processingOptions.advancedOptions === true) {
+        if (!isEnterprisePlan) {
+            enterpriseFeatures.push('Advanced Processing Options');
+        }
+    }
+
+    // Block request if non-enterprise user is trying to use enterprise features
+    if (enterpriseFeatures.length > 0) {
+        console.log(`❌ Enterprise features blocked for user: ${apiKeyData.user_email}, Plan: ${userPlan.plan}`);
+        return res.status(403).json({
+            success: false,
+            error: 'Enterprise features required',
+            blockedFeatures: enterpriseFeatures,
+            userPlan: userPlan.plan,
+            upgradeRequired: true,
+            message: `The following features require an Enterprise plan: ${enterpriseFeatures.join(', ')}`
+        });
+    }
+
+    console.log(`✅ Plan validation passed for user: ${apiKeyData.user_email}, Plan: ${userPlan.plan}`);
     
     const { 
         csvContent, 
@@ -715,5 +787,670 @@ async function applyAutoFormatting(spreadsheetId, sheetName, rows, googleToken) 
         
     } catch (error) {
         console.log('⚠️ Formatting failed (non-critical):', error.message);
+    }
+}
+
+// Redirect create-sheet calls to the proper sheets-api endpoint
+async function handleCreateSheetRedirect(req, res, apiKeyData) {
+    try {
+        const { sheetName, googleToken } = req.body;
+        
+        console.log('🔄 Redirecting create-sheet call to sheets-api');
+        
+        // Create new spreadsheet using Google Sheets API
+        const response = await fetch(
+            'https://sheets.googleapis.com/v4/spreadsheets',
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${googleToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    properties: {
+                        title: sheetName?.trim() || `CSV Import - ${new Date().toLocaleDateString()}`
+                    },
+                    sheets: [{
+                        properties: {
+                            title: 'Sheet1',
+                            gridProperties: {
+                                rowCount: 1000,
+                                columnCount: 26
+                            }
+                        }
+                    }]
+                })
+            }
+        );
+        
+        if (!response.ok) {
+            console.error('❌ Google Sheets API error:', response.status);
+            
+            if (response.status === 401 || response.status === 403) {
+                return res.status(401).json({
+                    success: false,
+                    error: 'Google authentication expired',
+                    needsReauth: true
+                });
+            }
+            
+            const errorText = await response.text();
+            throw new Error(`Google Sheets API error: ${response.status} - ${errorText}`);
+        }
+        
+        const newSpreadsheet = await response.json();
+        
+        console.log('✅ Successfully created spreadsheet via redirect:', newSpreadsheet.spreadsheetId);
+        
+        return res.json({
+            success: true,
+            spreadsheet: {
+                id: newSpreadsheet.spreadsheetId,
+                title: newSpreadsheet.properties.title,
+                editUrl: `https://docs.google.com/spreadsheets/d/${newSpreadsheet.spreadsheetId}/edit`,
+                createdAt: new Date().toISOString()
+            },
+            message: `Successfully created "${newSpreadsheet.properties.title}"`,
+            note: 'Created via csv-api redirect to Google Sheets API'
+        });
+        
+    } catch (error) {
+        console.error('❌ Create sheet redirect error:', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to create sheet: ' + error.message
+        });
+    }
+}
+
+// ===== BULK QUEUE MANAGEMENT FUNCTIONS =====
+
+// Create a new bulk upload job
+async function handleBulkQueueCreate(req, res, apiKeyData) {
+    try {
+        const { jobName, description } = req.body;
+        
+        const jobId = `bulk_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Create bulk job record in database
+        const { data: job, error } = await supabase
+            .from('bulk_upload_jobs')
+            .insert({
+                job_id: jobId,
+                user_id: apiKeyData.user_id,
+                user_email: apiKeyData.user_email,
+                job_name: jobName || `Bulk Upload ${new Date().toLocaleDateString()}`,
+                description: description || '',
+                status: 'created',
+                files_count: 0,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            })
+            .select()
+            .single();
+            
+        if (error) {
+            console.error('❌ Failed to create bulk job:', error);
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to create bulk upload job'
+            });
+        }
+        
+        console.log('✅ Created bulk upload job:', jobId);
+        
+        return res.json({
+            success: true,
+            job: {
+                jobId,
+                jobName: job.job_name,
+                status: job.status,
+                filesCount: 0,
+                createdAt: job.created_at
+            }
+        });
+        
+    } catch (error) {
+        console.error('❌ Bulk queue create error:', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to create bulk job: ' + error.message
+        });
+    }
+}
+
+// Add file to existing bulk job
+async function handleBulkQueueAddFile(req, res, apiKeyData) {
+    try {
+        const { jobId, filename, fileContent, fileSize, uploadOptions } = req.body;
+        
+        if (!jobId || !filename || !fileContent) {
+            return res.status(400).json({
+                success: false,
+                error: 'jobId, filename, and fileContent are required'
+            });
+        }
+        
+        // Verify job belongs to user
+        const { data: job, error: jobError } = await supabase
+            .from('bulk_upload_jobs')
+            .select('*')
+            .eq('job_id', jobId)
+            .eq('user_id', apiKeyData.user_id)
+            .single();
+            
+        if (jobError || !job) {
+            return res.status(404).json({
+                success: false,
+                error: 'Bulk job not found or access denied'
+            });
+        }
+        
+        if (job.status !== 'created' && job.status !== 'building') {
+            return res.status(400).json({
+                success: false,
+                error: 'Cannot add files to job in current status: ' + job.status
+            });
+        }
+        
+        const fileId = `file_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Add file to bulk_upload_files table
+        const { error: fileError } = await supabase
+            .from('bulk_upload_files')
+            .insert({
+                file_id: fileId,
+                job_id: jobId,
+                user_id: apiKeyData.user_id,
+                filename,
+                file_content: fileContent,
+                file_size: fileSize || fileContent.length,
+                upload_options: uploadOptions || {},
+                status: 'pending',
+                target_spreadsheet_id: uploadOptions?.targetSheet?.spreadsheetId || null,
+                target_sheet_name: uploadOptions?.targetSheet?.sheetName || null,
+                created_at: new Date().toISOString()
+            });
+            
+        if (fileError) {
+            console.error('❌ Failed to add file to bulk job:', fileError);
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to add file to bulk job'
+            });
+        }
+        
+        // Update job files count and status
+        const { error: updateError } = await supabase
+            .from('bulk_upload_jobs')
+            .update({
+                status: 'building',
+                files_count: job.files_count + 1,
+                updated_at: new Date().toISOString()
+            })
+            .eq('job_id', jobId);
+            
+        if (updateError) {
+            console.error('❌ Failed to update job files count:', updateError);
+        }
+        
+        console.log('✅ Added file to bulk job:', filename, '→', jobId);
+        
+        return res.json({
+            success: true,
+            file: {
+                fileId,
+                filename,
+                status: 'pending',
+                size: fileSize || fileContent.length,
+                targetSheet: uploadOptions?.targetSheet || null
+            },
+            job: {
+                jobId,
+                filesCount: job.files_count + 1,
+                status: 'building'
+            }
+        });
+        
+    } catch (error) {
+        console.error('❌ Bulk queue add file error:', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to add file: ' + error.message
+        });
+    }
+}
+
+// Remove specific file from bulk job
+async function handleBulkQueueRemoveFile(req, res, apiKeyData) {
+    try {
+        const { jobId, fileId } = req.body;
+        
+        if (!jobId || !fileId) {
+            return res.status(400).json({
+                success: false,
+                error: 'jobId and fileId are required'
+            });
+        }
+        
+        // Verify file belongs to user's job
+        const { data: file, error: fileError } = await supabase
+            .from('bulk_upload_files')
+            .select('*')
+            .eq('file_id', fileId)
+            .eq('job_id', jobId)
+            .eq('user_id', apiKeyData.user_id)
+            .single();
+            
+        if (fileError || !file) {
+            return res.status(404).json({
+                success: false,
+                error: 'File not found or access denied'
+            });
+        }
+        
+        // Delete file record
+        const { error: deleteError } = await supabase
+            .from('bulk_upload_files')
+            .delete()
+            .eq('file_id', fileId);
+            
+        if (deleteError) {
+            console.error('❌ Failed to remove file from bulk job:', deleteError);
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to remove file from job'
+            });
+        }
+        
+        // Update job files count
+        const { data: job, error: jobUpdateError } = await supabase
+            .from('bulk_upload_jobs')
+            .select('files_count')
+            .eq('job_id', jobId)
+            .single();
+            
+        if (!jobUpdateError && job) {
+            await supabase
+                .from('bulk_upload_jobs')
+                .update({
+                    files_count: Math.max(0, job.files_count - 1),
+                    updated_at: new Date().toISOString()
+                })
+                .eq('job_id', jobId);
+        }
+        
+        console.log('✅ Removed file from bulk job:', file.filename, '←', jobId);
+        
+        return res.json({
+            success: true,
+            removedFile: {
+                fileId,
+                filename: file.filename
+            },
+            job: {
+                jobId,
+                filesCount: Math.max(0, (job?.files_count || 1) - 1)
+            }
+        });
+        
+    } catch (error) {
+        console.error('❌ Bulk queue remove file error:', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to remove file: ' + error.message
+        });
+    }
+}
+
+// Get bulk job status and file list
+async function handleBulkQueueList(req, res, apiKeyData) {
+    try {
+        const { jobId } = req.body;
+        
+        if (!jobId) {
+            return res.status(400).json({
+                success: false,
+                error: 'jobId is required'
+            });
+        }
+        
+        // Get job details
+        const { data: job, error: jobError } = await supabase
+            .from('bulk_upload_jobs')
+            .select('*')
+            .eq('job_id', jobId)
+            .eq('user_id', apiKeyData.user_id)
+            .single();
+            
+        if (jobError || !job) {
+            return res.status(404).json({
+                success: false,
+                error: 'Bulk job not found or access denied'
+            });
+        }
+        
+        // Get files in job
+        const { data: files, error: filesError } = await supabase
+            .from('bulk_upload_files')
+            .select('file_id, filename, file_size, status, target_spreadsheet_id, target_sheet_name, created_at, error_message')
+            .eq('job_id', jobId)
+            .order('created_at', { ascending: true });
+            
+        if (filesError) {
+            console.error('❌ Failed to get bulk job files:', filesError);
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to get job files'
+            });
+        }
+        
+        const jobDetails = {
+            jobId: job.job_id,
+            jobName: job.job_name,
+            description: job.description,
+            status: job.status,
+            filesCount: job.files_count,
+            createdAt: job.created_at,
+            updatedAt: job.updated_at,
+            startedAt: job.started_at,
+            completedAt: job.completed_at
+        };
+        
+        const filesList = files.map(file => ({
+            fileId: file.file_id,
+            filename: file.filename,
+            size: file.file_size,
+            status: file.status,
+            targetSheet: file.target_spreadsheet_id ? {
+                spreadsheetId: file.target_spreadsheet_id,
+                sheetName: file.target_sheet_name
+            } : null,
+            createdAt: file.created_at,
+            error: file.error_message
+        }));
+        
+        return res.json({
+            success: true,
+            job: jobDetails,
+            files: filesList
+        });
+        
+    } catch (error) {
+        console.error('❌ Bulk queue list error:', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to get job details: ' + error.message
+        });
+    }
+}
+
+// Update target sheets for files in bulk job
+async function handleBulkQueueUpdateTargets(req, res, apiKeyData) {
+    try {
+        const { jobId, fileTargets } = req.body;
+        
+        if (!jobId || !fileTargets || !Array.isArray(fileTargets)) {
+            return res.status(400).json({
+                success: false,
+                error: 'jobId and fileTargets array are required'
+            });
+        }
+        
+        // Verify job belongs to user
+        const { data: job, error: jobError } = await supabase
+            .from('bulk_upload_jobs')
+            .select('*')
+            .eq('job_id', jobId)
+            .eq('user_id', apiKeyData.user_id)
+            .single();
+            
+        if (jobError || !job) {
+            return res.status(404).json({
+                success: false,
+                error: 'Bulk job not found or access denied'
+            });
+        }
+        
+        // Update each file's target sheet
+        const updatePromises = fileTargets.map(async ({ fileId, targetSheet }) => {
+            return supabase
+                .from('bulk_upload_files')
+                .update({
+                    target_spreadsheet_id: targetSheet?.spreadsheetId || null,
+                    target_sheet_name: targetSheet?.sheetName || null,
+                    updated_at: new Date().toISOString()
+                })
+                .eq('file_id', fileId)
+                .eq('job_id', jobId)
+                .eq('user_id', apiKeyData.user_id);
+        });
+        
+        const results = await Promise.all(updatePromises);
+        const errors = results.filter(result => result.error);
+        
+        if (errors.length > 0) {
+            console.error('❌ Some target updates failed:', errors);
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to update some file targets'
+            });
+        }
+        
+        console.log('✅ Updated target sheets for bulk job:', jobId);
+        
+        return res.json({
+            success: true,
+            updatedFiles: fileTargets.length,
+            job: {
+                jobId,
+                status: job.status
+            }
+        });
+        
+    } catch (error) {
+        console.error('❌ Bulk queue update targets error:', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to update targets: ' + error.message
+        });
+    }
+}
+
+// Execute bulk upload job
+async function handleBulkQueueExecute(req, res, apiKeyData) {
+    try {
+        const { jobId } = req.body;
+        
+        if (!jobId) {
+            return res.status(400).json({
+                success: false,
+                error: 'jobId is required'
+            });
+        }
+        
+        // Get job and files
+        const { data: job, error: jobError } = await supabase
+            .from('bulk_upload_jobs')
+            .select('*')
+            .eq('job_id', jobId)
+            .eq('user_id', apiKeyData.user_id)
+            .single();
+            
+        if (jobError || !job) {
+            return res.status(404).json({
+                success: false,
+                error: 'Bulk job not found or access denied'
+            });
+        }
+        
+        if (job.status !== 'building' && job.status !== 'created') {
+            return res.status(400).json({
+                success: false,
+                error: 'Job cannot be executed in current status: ' + job.status
+            });
+        }
+        
+        // Get files to process
+        const { data: files, error: filesError } = await supabase
+            .from('bulk_upload_files')
+            .select('*')
+            .eq('job_id', jobId)
+            .eq('status', 'pending');
+            
+        if (filesError) {
+            console.error('❌ Failed to get files for execution:', filesError);
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to get files for processing'
+            });
+        }
+        
+        if (files.length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'No pending files to process'
+            });
+        }
+        
+        // Update job status to processing
+        await supabase
+            .from('bulk_upload_jobs')
+            .update({
+                status: 'processing',
+                started_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            })
+            .eq('job_id', jobId);
+        
+        // Process files one by one (in background we could make this parallel)
+        let successCount = 0;
+        let errorCount = 0;
+        
+        for (const file of files) {
+            try {
+                // Mark file as processing
+                await supabase
+                    .from('bulk_upload_files')
+                    .update({ status: 'processing' })
+                    .eq('file_id', file.file_id);
+                
+                // Create a mock request object for the CSV processing
+                const mockReq = {
+                    body: {
+                        action: 'complete-upload',
+                        csvContent: file.file_content,
+                        filename: file.filename,
+                        spreadsheetId: file.target_spreadsheet_id,
+                        sheetName: file.target_sheet_name,
+                        ...file.upload_options
+                    }
+                };
+                
+                // Create a mock response object to capture the result
+                let uploadResult = null;
+                let uploadError = null;
+                
+                const mockRes = {
+                    json: (data) => { uploadResult = data; },
+                    status: (code) => ({
+                        json: (data) => { 
+                            uploadError = { status: code, ...data }; 
+                        }
+                    })
+                };
+                
+                // Process the file using existing upload logic
+                await handleCompleteUpload(mockReq, mockRes, apiKeyData);
+                
+                if (uploadResult && uploadResult.success) {
+                    // Mark file as completed
+                    await supabase
+                        .from('bulk_upload_files')
+                        .update({
+                            status: 'completed',
+                            completed_at: new Date().toISOString(),
+                            result_data: uploadResult
+                        })
+                        .eq('file_id', file.file_id);
+                    
+                    successCount++;
+                    console.log('✅ Bulk file processed:', file.filename);
+                } else {
+                    // Mark file as failed
+                    await supabase
+                        .from('bulk_upload_files')
+                        .update({
+                            status: 'failed',
+                            error_message: uploadError?.error || 'Unknown upload error',
+                            completed_at: new Date().toISOString()
+                        })
+                        .eq('file_id', file.file_id);
+                    
+                    errorCount++;
+                    console.error('❌ Bulk file failed:', file.filename, uploadError?.error);
+                }
+                
+            } catch (fileError) {
+                // Mark file as failed
+                await supabase
+                    .from('bulk_upload_files')
+                    .update({
+                        status: 'failed',
+                        error_message: fileError.message,
+                        completed_at: new Date().toISOString()
+                    })
+                    .eq('file_id', file.file_id);
+                
+                errorCount++;
+                console.error('❌ Bulk file processing error:', file.filename, fileError);
+            }
+        }
+        
+        // Update job status to completed
+        const finalStatus = errorCount === 0 ? 'completed' : (successCount === 0 ? 'failed' : 'partial');
+        
+        await supabase
+            .from('bulk_upload_jobs')
+            .update({
+                status: finalStatus,
+                completed_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+                success_count: successCount,
+                error_count: errorCount
+            })
+            .eq('job_id', jobId);
+        
+        console.log('✅ Bulk job completed:', jobId, `${successCount} success, ${errorCount} errors`);
+        
+        return res.json({
+            success: true,
+            job: {
+                jobId,
+                status: finalStatus,
+                processedFiles: files.length,
+                successCount,
+                errorCount
+            },
+            message: `Bulk upload completed: ${successCount} successful, ${errorCount} failed`
+        });
+        
+    } catch (error) {
+        // Mark job as failed
+        await supabase
+            .from('bulk_upload_jobs')
+            .update({
+                status: 'failed',
+                error_message: error.message,
+                completed_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            })
+            .eq('job_id', jobId);
+        
+        console.error('❌ Bulk queue execute error:', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to execute bulk job: ' + error.message
+        });
     }
 }
