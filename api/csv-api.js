@@ -247,10 +247,16 @@ export default async function handler(req, res) {
                 return await handleBulkQueueUpdateTargets(req, res, apiKeyData);
             case 'bulk-queue-execute':
                 return await handleBulkQueueExecute(req, res, apiKeyData);
+            case 'fetch-content':
+                return await handleFetchContent(req, res, apiKeyData);
+            case 'process-client-queue':
+                return await handleProcessClientQueue(req, res, apiKeyData);
+            case 'check-headers':
+                return await handleCheckHeaders(req, res, apiKeyData);
             default:
                 return res.status(400).json({
                     success: false,
-                    error: `Unknown action: ${action}. Available actions: process-csv, complete-upload, create-sheet, bulk-queue-create, bulk-queue-add-file, bulk-queue-remove-file, bulk-queue-list, bulk-queue-update-targets, bulk-queue-execute`
+                    error: `Unknown action: ${action}. Available actions: process-csv, complete-upload, create-sheet, bulk-queue-create, bulk-queue-add-file, bulk-queue-remove-file, bulk-queue-list, bulk-queue-update-targets, bulk-queue-execute, fetch-content, process-client-queue, check-headers`
                 });
         }
         
@@ -1452,5 +1458,420 @@ async function handleBulkQueueExecute(req, res, apiKeyData) {
             success: false,
             error: 'Failed to execute bulk job: ' + error.message
         });
+    }
+}
+
+// ===== CLIENT-SIDE BULK UPLOAD HANDLERS =====
+// These handle bulk uploads from the browser extension directly
+
+// Fetch CSV content from URL (moved from frontend for security)
+async function handleFetchContent(req, res, apiKeyData) {
+    try {
+        const { url, filename } = req.body;
+        
+        if (!url) {
+            return res.status(400).json({
+                success: false,
+                error: 'URL required'
+            });
+        }
+        
+        console.log(`📡 Fetching content for: ${filename || 'unknown'} from ${url}`);
+        
+        const content = await fetchCSVContentWithRetry(url, 3);
+        
+        if (content && content.length > 0) {
+            console.log(`✅ Successfully fetched content: ${content.length} characters`);
+            
+            // Log the activity
+            await logCSVActivity(apiKeyData.user_id, 'fetch_content', {
+                filename: filename,
+                url: url,
+                contentSize: content.length
+            });
+            
+            return res.json({
+                success: true,
+                content: content,
+                filename: filename,
+                size: content.length,
+                message: `Content fetched successfully`
+            });
+        } else {
+            return res.status(404).json({
+                success: false,
+                error: 'No valid CSV content found at URL'
+            });
+        }
+        
+    } catch (error) {
+        console.error('❌ Fetch content error:', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to fetch content: ' + error.message
+        });
+    }
+}
+
+// Process entire client upload queue (business logic moved from frontend)
+async function handleProcessClientQueue(req, res, apiKeyData) {
+    try {
+        const { queue, bulkTarget, googleToken } = req.body;
+        
+        if (!queue || !Array.isArray(queue)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Queue array required'
+            });
+        }
+        
+        if (!bulkTarget || !bulkTarget.spreadsheetId || !bulkTarget.tabName) {
+            return res.status(400).json({
+                success: false,
+                error: 'Bulk target (spreadsheetId and tabName) required'
+            });
+        }
+        
+        if (!googleToken) {
+            return res.status(400).json({
+                success: false,
+                error: 'Google token required'
+            });
+        }
+        
+        console.log(`🚀 Processing client queue of ${queue.length} files for user: ${apiKeyData.user_email}`);
+        
+        const results = [];
+        let successCount = 0;
+        let failCount = 0;
+        
+        // Check if target already has headers from previous uploads
+        let hasHeaders = await checkTargetHasHeaders(bulkTarget.spreadsheetId, bulkTarget.tabName, apiKeyData.user_id);
+        console.log(`📊 Target headers status: ${hasHeaders ? 'Has headers' : 'No headers yet'}`);
+        
+        // Process each file in the queue sequentially
+        for (let i = 0; i < queue.length; i++) {
+            const item = queue[i];
+            
+            try {
+                console.log(`📤 Processing file ${i + 1}/${queue.length}: ${item.filename}`);
+                
+                // Fetch content if missing
+                let content = item.content;
+                if (!content && item.url) {
+                    console.log(`🔄 Fetching missing content for: ${item.filename}`);
+                    content = await fetchCSVContentWithRetry(item.url, 3);
+                }
+                
+                if (!content) {
+                    throw new Error('CSV content not available');
+                }
+                
+                // Parse and upload CSV to Google Sheets
+                const uploadResult = await uploadCSVToGoogleSheets({
+                    content: content,
+                    filename: item.filename,
+                    spreadsheetId: bulkTarget.spreadsheetId,
+                    tabName: bulkTarget.tabName,
+                    googleToken: googleToken,
+                    hasHeaders: hasHeaders,
+                    userEmail: apiKeyData.user_email,
+                    userId: apiKeyData.user_id
+                });
+                
+                if (uploadResult.success) {
+                    successCount++;
+                    results.push({
+                        success: true,
+                        filename: item.filename,
+                        rowsUploaded: uploadResult.rowsUploaded,
+                        message: `Uploaded ${uploadResult.rowsUploaded} rows`
+                    });
+                    
+                    // After first successful upload, headers exist for subsequent uploads
+                    if (i === 0 && !hasHeaders) {
+                        hasHeaders = true;
+                        await recordTargetHasHeaders(bulkTarget.spreadsheetId, bulkTarget.tabName, apiKeyData.user_id);
+                        console.log(`✅ Headers recorded for target after first upload`);
+                    }
+                } else {
+                    throw new Error(uploadResult.error || 'Upload failed');
+                }
+                
+            } catch (error) {
+                console.error(`❌ Failed to process ${item.filename}:`, error);
+                failCount++;
+                results.push({
+                    success: false,
+                    filename: item.filename,
+                    error: error.message
+                });
+            }
+        }
+        
+        // Log the bulk upload activity
+        await logCSVActivity(apiKeyData.user_id, 'bulk_upload_client', {
+            totalFiles: queue.length,
+            successCount: successCount,
+            failCount: failCount,
+            targetSheet: bulkTarget.spreadsheetId,
+            targetTab: bulkTarget.tabName,
+            targetSheetName: bulkTarget.sheetName
+        });
+        
+        console.log(`✅ Client bulk upload completed: ${successCount} successful, ${failCount} failed`);
+        
+        return res.json({
+            success: true,
+            results: results,
+            summary: {
+                total: queue.length,
+                successful: successCount,
+                failed: failCount,
+                targetSheet: bulkTarget.sheetName,
+                targetTab: bulkTarget.tabName
+            },
+            message: failCount === 0 
+                ? `All ${successCount} files uploaded successfully!`
+                : `${successCount}/${queue.length} files uploaded successfully, ${failCount} failed`
+        });
+        
+    } catch (error) {
+        console.error('❌ Process client queue error:', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to process queue: ' + error.message
+        });
+    }
+}
+
+// Check if target sheet/tab has headers (moved from frontend)
+async function handleCheckHeaders(req, res, apiKeyData) {
+    try {
+        const { spreadsheetId, tabName } = req.body;
+        
+        if (!spreadsheetId || !tabName) {
+            return res.status(400).json({
+                success: false,
+                error: 'spreadsheetId and tabName required'
+            });
+        }
+        
+        const hasHeaders = await checkTargetHasHeaders(spreadsheetId, tabName, apiKeyData.user_id);
+        
+        return res.json({
+            success: true,
+            hasHeaders: hasHeaders,
+            targetKey: `${spreadsheetId}_${tabName}`,
+            message: hasHeaders ? 'Target has headers from previous uploads' : 'Target needs headers (first upload)'
+        });
+        
+    } catch (error) {
+        console.error('❌ Check headers error:', error);
+        return res.status(500).json({
+            success: false,
+            error: 'Failed to check headers: ' + error.message
+        });
+    }
+}
+
+// ===== HELPER FUNCTIONS FOR CLIENT BULK UPLOADS =====
+
+// Fetch CSV content with retry logic
+async function fetchCSVContentWithRetry(url, maxRetries = 3) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            console.log(`📡 Fetch attempt ${attempt}/${maxRetries} for URL: ${url.substring(0, 100)}...`);
+            
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+            
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: {
+                    'Accept': 'text/csv,text/plain,application/csv,*/*',
+                    'Cache-Control': 'no-cache',
+                    'User-Agent': 'Mozilla/5.0 (compatible; CSV-Wizard/1.0)'
+                },
+                signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+            
+            if (response.ok) {
+                const content = await response.text();
+                
+                // Validate content looks like CSV
+                if (content && content.length > 0 && !content.includes('<html') && !content.includes('<!DOCTYPE')) {
+                    console.log(`✅ Fetch attempt ${attempt} succeeded: ${content.length} characters`);
+                    return content;
+                } else {
+                    console.log(`❌ Attempt ${attempt}: Content doesn't look like CSV`);
+                }
+            } else {
+                console.log(`❌ Attempt ${attempt}: HTTP ${response.status}`);
+            }
+            
+        } catch (error) {
+            console.log(`❌ Attempt ${attempt}: ${error.message}`);
+            if (attempt === maxRetries) {
+                throw error;
+            }
+        }
+        
+        // Wait before retry with exponential backoff
+        if (attempt < maxRetries) {
+            await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt - 1)));
+        }
+    }
+    
+    throw new Error('Failed to fetch CSV content after all attempts');
+}
+
+// Upload CSV to Google Sheets (simplified from existing logic)
+async function uploadCSVToGoogleSheets({ content, filename, spreadsheetId, tabName, googleToken, hasHeaders, userEmail, userId }) {
+    try {
+        console.log(`📊 Uploading ${filename} to ${spreadsheetId}/${tabName}, headers: ${hasHeaders ? 'skip' : 'include'}`);
+        
+        // Parse CSV content using existing function
+        const parseResult = parseCSVContent(content, {
+            headerHandling: hasHeaders ? 'skip' : 'use',
+            delimiter: 'auto',
+            trimWhitespace: true,
+            skipEmptyRows: true
+        });
+        
+        if (!parseResult.success) {
+            throw new Error(`CSV parsing failed: ${parseResult.error}`);
+        }
+        
+        console.log(`📊 Parsed CSV: ${parseResult.data.length} rows, ${parseResult.data[0]?.length || 0} columns`);
+        
+        // Upload to Google Sheets using append API
+        const uploadResponse = await fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${tabName}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${googleToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    values: parseResult.data
+                })
+            }
+        );
+        
+        if (!uploadResponse.ok) {
+            const errorText = await uploadResponse.text();
+            throw new Error(`Google Sheets API error: ${uploadResponse.status} - ${errorText}`);
+        }
+        
+        const uploadResult = await uploadResponse.json();
+        const rowsUploaded = parseResult.data.length;
+        
+        // Log successful upload
+        await logCSVActivity(userId, 'csv_upload', {
+            filename: filename,
+            spreadsheetId: spreadsheetId,
+            tabName: tabName,
+            rowsUploaded: rowsUploaded,
+            columnsUploaded: parseResult.data[0]?.length || 0,
+            hasHeaders: hasHeaders,
+            userEmail: userEmail
+        });
+        
+        console.log(`✅ Successfully uploaded ${filename}: ${rowsUploaded} rows`);
+        
+        return {
+            success: true,
+            rowsUploaded: rowsUploaded,
+            totalColumns: parseResult.data[0]?.length || 0,
+            spreadsheetId: spreadsheetId,
+            tabName: tabName,
+            parseResult: parseResult
+        };
+        
+    } catch (error) {
+        console.error(`❌ Google Sheets upload error for ${filename}:`, error);
+        
+        // Log failed upload
+        await logCSVActivity(userId, 'csv_upload_failed', {
+            filename: filename,
+            spreadsheetId: spreadsheetId,
+            tabName: tabName,
+            error: error.message,
+            userEmail: userEmail
+        });
+        
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+}
+
+// Check if target has headers from previous uploads
+async function checkTargetHasHeaders(spreadsheetId, tabName, userId) {
+    try {
+        const { data, error } = await supabase
+            .from('csv_uploads')
+            .select('id')
+            .eq('user_id', userId)
+            .eq('spreadsheet_id', spreadsheetId)
+            .eq('sheet_name', tabName)
+            .eq('status', 'completed')
+            .limit(1);
+            
+        if (error) {
+            console.log('Error checking header history:', error);
+            return false;
+        }
+        
+        const hasHeaders = data && data.length > 0;
+        console.log(`🔍 Headers check for ${spreadsheetId}/${tabName}: ${hasHeaders ? 'Has headers' : 'No headers yet'}`);
+        return hasHeaders;
+        
+    } catch (error) {
+        console.log('No previous upload history found, assuming no headers');
+        return false;
+    }
+}
+
+// Record that target now has headers
+async function recordTargetHasHeaders(spreadsheetId, tabName, userId) {
+    try {
+        // This is automatically handled by logging successful uploads
+        // The checkTargetHasHeaders function will find completed uploads
+        console.log(`📊 Headers will be recorded via upload logging for ${spreadsheetId}/${tabName}`);
+    } catch (error) {
+        console.error('❌ Failed to record headers:', error);
+    }
+}
+
+// Log CSV activity (simplified version)
+async function logCSVActivity(userId, action, metadata) {
+    try {
+        await supabase
+            .from('csv_uploads')
+            .insert({
+                user_id: userId,
+                filename: metadata.filename || `${action}-request`,
+                file_size: metadata.contentSize || 0,
+                status: action.includes('failed') ? 'failed' : 'completed',
+                rows_uploaded: metadata.rowsUploaded || 0,
+                spreadsheet_id: metadata.spreadsheetId || null,
+                sheet_name: metadata.tabName || null,
+                metadata: {
+                    action: action,
+                    ...metadata,
+                    timestamp: new Date().toISOString()
+                },
+                created_at: new Date().toISOString()
+            });
+        console.log(`📝 Logged activity: ${action} for user ${userId}`);
+    } catch (error) {
+        console.error('❌ Failed to log activity:', error);
+        // Don't fail the main operation if logging fails
     }
 }
